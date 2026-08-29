@@ -47,8 +47,8 @@ const CONFIG_ITEMS: ConfigItem[] = [
   {
     key: 'ip',
     label: '面板后端地址',
-    placeholder: '请输入面板后端IP:PORT',
-    description: '格式“ip:port”,用于对接转发机时使用,ip是你安装面板服务器的公网ip,端口是安装脚本内输入的后端端口。不要套CDN,不支持https,通讯数据有加密',
+    placeholder: '请输入面板后端 IP:PORT（IPv6 用 [IP]:PORT）',
+    description: '格式“ip:port”,用于对接转发机；端口对应面板 .env 中的 BACKEND_PORT。IPv6 请使用“[IP]:PORT”格式。不要套 CDN，不支持 HTTPS，通讯数据有加密',
     type: 'input'
   },
   {
@@ -426,4 +426,4 @@ export default function ConfigPage() {
       </div>
     
   );
-} 
+}

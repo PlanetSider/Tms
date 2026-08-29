@@ -315,6 +315,8 @@ jobs:
           gh release upload "${VERSION}" ./docker-compose-v4.yml --clobber
           gh release upload "${VERSION}" ./docker-compose-v6.yml --clobber
           gh release upload "${VERSION}" ./docker-compose-node.yml --clobber
+          gh release upload "${VERSION}" ./docker-compose.yml --clobber
+          gh release upload "${VERSION}" ./.env.example --clobber
           
           echo "📤 上传数据库初始化文件..."
           gh release upload "${VERSION}" ./gost.sql --clobber
@@ -365,6 +367,8 @@ jobs:
           gh release upload "${VERSION}" ./docker-compose-v4.yml --clobber
           gh release upload "${VERSION}" ./docker-compose-v6.yml --clobber
           gh release upload "${VERSION}" ./docker-compose-node.yml --clobber
+          gh release upload "${VERSION}" ./docker-compose.yml --clobber
+          gh release upload "${VERSION}" ./.env.example --clobber
           gh release upload "${VERSION}" ./gost.sql --clobber
           
           echo "✅ GOST 二进制和 Release 文件更新完成！"
@@ -398,6 +402,8 @@ jobs:
           gh release upload "${VERSION}" ./docker-compose-v4.yml --clobber
           gh release upload "${VERSION}" ./docker-compose-v6.yml --clobber
           gh release upload "${VERSION}" ./docker-compose-node.yml --clobber
+          gh release upload "${VERSION}" ./docker-compose.yml --clobber
+          gh release upload "${VERSION}" ./.env.example --clobber
           
           # 上传数据库初始化文件（覆盖）
           echo "📤 更新数据库初始化文件..."

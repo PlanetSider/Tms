@@ -49,8 +49,8 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 
 ### 脚本与发布
 
-- `panel_install.sh` 支持安装、更新、状态查看、数据库导出、域名配置和卸载。
-- 面板安装脚本会校验下载内容、检查镜像拉取失败并保留原服务，升级时不删除数据库和日志卷。
+- 新面板安装不依赖 `.sh`，直接使用 `docker-compose.yml` 拉取 GHCR 预构建镜像。
+- `panel_install.sh` 仅保留给已经使用脚本部署的面板做升级、备份和卸载；脚本不会在新部署主路径中使用。
 - `install.sh` 保留旧版裸机节点入口，并在升级时处理旧 `sing-box` systemd 服务与 Agent 的交接。
 - GitHub Actions 负责面板镜像、节点镜像和相关发布流程。
 
@@ -66,7 +66,7 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 | `backend` | Spring Boot API、WebSocket 和定时任务 | `6365` |
 | `frontend` | 管理页面和订阅页面 | `6366` |
 
-后端等待 MySQL 健康后启动，前端等待后端健康后启动。MySQL 使用 `mysql_data` 卷，后端日志使用 `backend_logs` 卷；`tms update` 和重复执行安装不会删除这两个卷。
+后端等待 MySQL 健康后启动，前端等待后端健康后启动。MySQL 使用 `mysql_data` 卷，后端日志使用 `backend_logs` 卷；更新和重复执行 Compose 不会删除这两个卷。
 
 ### 节点使用单镜像和 host network
 
@@ -82,6 +82,7 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 
 | 文件 | 场景 | 说明 |
 |---|---|---|
+| `docker-compose.yml` | 面板生产部署（默认） | IPv4 bridge，直接拉取 GHCR 预构建镜像 |
 | `docker-compose-v4.yml` | 面板生产部署 | 默认配置，Docker bridge 内部使用 IPv4 |
 | `docker-compose-v6.yml` | 面板生产部署 | 设置 `TMS_IPV6=1` 后使用，需要 Docker daemon 支持 IPv6 |
 | `docker-compose-node.yml` | 节点生产部署 | Agent + GOST + sing-box 单镜像，host network |
@@ -99,42 +100,61 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 
 - 面板机：Linux、Docker Engine、Docker Compose 插件，以及访问 GitHub Container Registry（GHCR）的网络。
 - 节点机：Linux、Docker Engine、Docker Compose 插件，支持 amd64 或 arm64；协议端口需要在主机防火墙和云安全组放行。
-- 面板默认使用 TCP `6365` 供节点连接，使用 TCP `6366` 提供网页访问；如果端口被占用，安装脚本会自动选择附近的空闲端口。
+- 面板默认使用 TCP `6365` 供节点连接，使用 TCP `6366` 提供网页访问；Compose 不会自动改端口，端口被占用时请修改 `.env` 中的 `BACKEND_PORT` 或 `FRONTEND_PORT`。
 
-### 2. 安装面板
+### 2. 使用 Compose 安装面板
+
+新部署不需要在 VPS 上安装或运行任何 TMS `.sh` 安装脚本，也不需要在 VPS 上编译前后端镜像。Compose 会直接拉取 GitHub Actions 自动构建并发布到 GHCR 的镜像。
 
 在面板机执行：
 
 ~~~bash
 mkdir -p /opt/tms-panel && cd /opt/tms-panel
-curl -fsSL https://raw.githubusercontent.com/PlanetSider/Tms/main/panel_install.sh -o panel_install.sh
-chmod +x panel_install.sh
-./panel_install.sh
+git clone https://github.com/PlanetSider/Tms.git .
+cp .env.example .env
 ~~~
 
-安装脚本会自动安装 Docker（系统未安装时）、下载 Compose 文件和数据库初始化脚本、生成随机数据库凭据和 JWT 密钥，并启动 MySQL、后端、前端三个容器。
-
-安装结束后按脚本输出的地址访问面板。默认账号为 `admin_user`，默认密码为 `admin_user`，首次登录后必须立即修改密码。
-
-面板配置保存在安装目录的 `.env` 中，常用变量如下：
+编辑 `.env`，至少修改 `DB_PASSWORD` 和 `JWT_SECRET`：
 
 ~~~dotenv
-DB_NAME=随机数据库名
-DB_USER=随机数据库用户
-DB_PASSWORD=随机强密码
-JWT_SECRET=随机长字符串
+DB_NAME=gost
+DB_USER=gost
+DB_PASSWORD=换成随机强密码
+JWT_SECRET=换成随机长字符串
 FRONTEND_PORT=6366
 BACKEND_PORT=6365
-TMS_IPV6=0
 ~~~
 
-确实需要 Docker 内部 IPv6 时，在首次安装前设置 `TMS_IPV6=1`：
+启动预构建镜像：
 
 ~~~bash
-TMS_IPV6=1 ./panel_install.sh
+docker compose pull
+docker compose up -d
+docker compose ps
 ~~~
 
-不要提交 .env，也不要把数据库密码、JWT 密钥和节点密钥发送到公开位置。
+默认访问地址为 `http://面板IP:6366`，默认账号和密码均为 `admin_user`，首次登录后必须立即修改密码。`BACKEND_PORT` 是节点连接面板的公网端口，必须在安全组和防火墙放行。
+
+公开 GHCR 镜像无需登录即可拉取；如果仓库管理员将镜像设为私有，先使用拥有 `read:packages` 权限的 GitHub 账号执行 `docker login ghcr.io`，再运行 `docker compose pull`。
+
+如果不想完整 clone 仓库，也可以只下载 Compose、数据库和环境模板后启动：
+
+~~~bash
+mkdir -p /opt/tms-panel && cd /opt/tms-panel
+curl -fsSL https://raw.githubusercontent.com/PlanetSider/Tms/main/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/PlanetSider/Tms/main/gost.sql -o gost.sql
+curl -fsSL https://raw.githubusercontent.com/PlanetSider/Tms/main/.env.example -o .env.example
+cp .env.example .env
+~~~
+
+确实需要 Docker 内部 IPv6 时，下载或 clone `docker-compose-v6.yml`，使用同一个 `.env` 启动：
+
+~~~bash
+docker compose -f docker-compose-v6.yml --env-file .env pull
+docker compose -f docker-compose-v6.yml --env-file .env up -d
+~~~
+
+不要提交 `.env`，也不要把数据库密码、JWT 密钥和节点密钥发送到公开位置。
 
 ### 3. 添加节点
 
@@ -176,28 +196,28 @@ docker compose down
 
 车友可以在“我的订阅”复制通用订阅或 Clash/Mihomo 订阅。两种格式不通用：v2rayN、小火箭、v2rayNG 使用通用订阅，Clash Verge、ClashMeta、Mihomo 使用 Clash/Mihomo 订阅。
 
-### 5. 域名配置（可选）
+### 5. 域名和 HTTPS（可选）
 
 面板域名和节点连接域名是两项独立配置。
 
-给面板配置 HTTPS：
+纯 Compose 面板默认通过 `FRONTEND_PORT` 提供 HTTP。需要域名和 HTTPS 时，请在面板机前置配置 Caddy、Nginx 或云负载均衡，将域名反向代理到 `127.0.0.1:${FRONTEND_PORT}`，并放行 80、443 端口。反向代理配置不由默认 Compose 自动创建，原来的 IP 加端口入口仍可作为备用入口。
 
-~~~bash
-tms domain panel.example.com
-~~~
-
-域名必须解析到面板机，且 80、443 端口空闲并已在安全组放行。Caddy 会申请和续期 Let's Encrypt 证书；原来的 IP 加端口入口仍可作为备用入口。
+已经使用旧 `panel_install.sh` 部署的用户仍可通过 `tms domain DOMAIN` 管理脚本创建的 Caddy 配置；新 Compose 部署不要执行该命令。
 
 给节点配置连接域名：在“转发机”编辑页面填写“连接域名”，订阅中的节点地址会优先使用该域名。域名只是替换显示的地址，DNS 解析仍可能暴露节点 IP；VLESS/Trojan Reality、Hysteria2 和 TUIC 也不适合通过普通 CDN 代理。
 
 ### 6. 更新和故障处理
 
-更新面板：
+更新面板（Compose 部署）：
 
 ~~~bash
-tms update
-tms status
+cd /opt/tms-panel
+docker compose pull
+docker compose up -d --force-recreate
+docker compose ps
 ~~~
+
+如果面板目录是通过 Git 克隆的，更新 Compose 文件可先执行 `git pull --ff-only`；只下载文件的部署方式请重新下载 `docker-compose.yml`、`.env.example` 和 `gost.sql`。旧脚本部署用户仍可使用 `tms update`，不要将该命令用于 Compose 部署。
 
 更新节点：
 
@@ -220,17 +240,20 @@ docker compose logs --tail=200 node
 
 ### 7. 卸载
 
-面板机执行：
+面板机执行（Compose 部署）：
 
 ~~~bash
-tms purge
-~~~
-
-该命令会删除面板容器、镜像、网络、数据卷和管理命令，数据库数据也会被删除。仅停止面板并保留数据时，在面板安装目录执行：
-
-~~~bash
+cd /opt/tms-panel
 docker compose down
 ~~~
+
+`docker compose down` 会停止并删除面板容器和网络，但保留数据库与日志卷。确认要删除数据库数据、日志和面板容器时，再执行：
+
+~~~bash
+docker compose down -v
+~~~
+
+旧脚本部署用户仍可使用 `tms purge`；该命令会连同脚本管理的资源一起清理。
 
 节点机执行 docker compose down 会保留 node_data；执行 docker compose down -v 才会删除节点配置、证书和运行时数据：
 
@@ -241,19 +264,20 @@ docker compose down -v
 
 面板和节点是两个独立的 Compose 项目，卸载一方不会自动删除另一方。
 
-## 常用管理命令
+## 常用 Compose 管理命令
 
 | 命令 | 作用 |
 |---|---|
-| `tms` | 打开管理菜单 |
-| `tms update` | 更新面板镜像和 Compose 配置 |
-| `tms status` | 查看面板容器状态 |
-| `tms info` | 查看面板访问地址和账号 |
-| `tms domain DOMAIN` | 配置面板域名和 HTTPS |
-| `tms domain` | 查看域名状态 |
-| `tms domain off` | 关闭面板域名 |
-| `tms export` | 导出数据库备份 |
-| `tms purge` | 彻底卸载面板 |
+| `docker compose ps` | 查看面板容器状态和健康状态 |
+| `docker compose logs -f backend` | 查看后端实时日志 |
+| `docker compose logs -f frontend` | 查看前端实时日志 |
+| `docker compose pull` | 拉取 GitHub Actions 发布的最新镜像 |
+| `docker compose up -d --force-recreate` | 应用镜像或 Compose 配置更新 |
+| `docker compose restart backend` | 仅重启后端容器 |
+| `docker compose down` | 停止面板并保留数据卷 |
+| `docker compose down -v` | 停止面板并删除数据库、日志卷 |
+
+以上命令均需在面板 Compose 目录（例如 `/opt/tms-panel`）执行。旧脚本部署用户的 `tms`、`tms update`、`tms status`、`tms info`、`tms domain`、`tms export` 和 `tms purge` 命令继续保留兼容，不适用于新 Compose 部署。
 
 ## 免责声明
 

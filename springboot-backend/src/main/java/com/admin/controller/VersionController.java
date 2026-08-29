@@ -38,7 +38,7 @@ public class VersionController extends BaseController {
      * 注意查的是【最新一次构建成功的 workflow】,不是 main 的最新 commit。
      *
      * 用 commits/main 的话,push 完到 CI 构建完中间隔着几分钟,这段时间面板会提示
-     * "有更新",用户跑 tms update 却只能拉到旧镜像 —— 提示还一直挂着。
+     * "有更新",用户执行 docker compose pull 前如果镜像尚未发布,提示会短暂不准确。
      * 按构建成功的 head_sha 比,提示亮起来时镜像一定已经在 GHCR 上了。
      */
     private static final String RUNS_API =

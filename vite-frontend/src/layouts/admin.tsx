@@ -39,6 +39,7 @@ export default function AdminLayout({
   const { isOpen, onOpen, onOpenChange } = useDisclosure();
   // 更新弹窗单独一个开关,别和改密码那个共用
   const updateModal = useDisclosure();
+  const panelUpdateCommand = 'cd /opt/tms-panel && docker compose pull && docker compose up -d --force-recreate';
 
   const [isMobile, setIsMobile] = useState(false);
   const [mobileMenuVisible, setMobileMenuVisible] = useState(false);
@@ -559,8 +560,8 @@ export default function AdminLayout({
       </Modal>
 
       {/* 更新说明弹窗。
-          这里刻意不做「点一下自动更新」:面板跑在容器里,而 tms update 是宿主机
-          命令(docker compose pull + up),容器内执行不了。要能执行只能把
+          这里刻意不做「点一下自动更新」:面板跑在容器里,更新命令需要在宿主机
+          执行(docker compose pull + up),容器内执行不了。要能执行只能把
           /var/run/docker.sock 挂进来 —— 那等于把宿主机 root 交给一个公网可访问
           的 Web 应用,面板一旦有 RCE 整台机器就没了。何况更新会重启 backend
           容器自己,执行更新的线程当场被杀,反而容易卡在半路。
@@ -587,12 +588,12 @@ export default function AdminLayout({
                   <div>
                     <p className="text-sm text-default-500 mb-2">在面板服务器上执行:</p>
                     <div className="flex items-center gap-2 bg-default-100 rounded-lg px-3 py-2">
-                      <code className="flex-1 font-mono text-sm select-all">tms update</code>
+                      <code className="flex-1 min-w-0 break-all font-mono text-xs select-all">{panelUpdateCommand}</code>
                       <Button
                         size="sm"
                         variant="flat"
                         onPress={async () => {
-                          (await copyTextToClipboard('tms update'))
+                          (await copyTextToClipboard(panelUpdateCommand))
                             ? toast.success('已复制')
                             : toast.error('复制失败,请手动选中命令');
                         }}
@@ -606,6 +607,7 @@ export default function AdminLayout({
                     <p>· 更新过程面板会重启,大约 1-2 分钟</p>
                     <p>· 节点和转发跑在各自的机器上,不受面板重启影响</p>
                     <p>· 车友的订阅链接不变,不用重新分发</p>
+                    <p>· 旧脚本部署用户仍可使用 tms update</p>
                   </div>
                 </div>
               </ModalBody>
@@ -618,4 +620,4 @@ export default function AdminLayout({
       </Modal>
     </div>
   );
-} 
+}
