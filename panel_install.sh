@@ -78,6 +78,42 @@ check_docker() {
   echo "检测到 Docker 命令：$DOCKER_CMD"
 }
 
+# 旧版脚本使用 Docker named volume，新版 Compose 使用当前目录下的绑定目录。
+# 升级时在替换 Compose 文件前迁移一次，避免历史面板启动到空数据库。
+migrate_named_volume_to_bind() {
+  local volume="$1"
+  local target="$2"
+
+  if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    return 0
+  fi
+  mkdir -p "$target"
+  if [ -n "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    echo "❌ 绑定目录 $target 已有文件，无法自动迁移 named volume $volume。"
+    echo "   请先备份并清空该目录，再重新执行更新。"
+    return 1
+  fi
+  echo "   迁移 $volume -> $target ..."
+  docker run --rm -v "$volume:/from:ro" -v "$PWD/$target:/to" alpine sh -c 'cp -a /from/. /to/'
+}
+
+migrate_legacy_storage() {
+  [ "${PRESERVE_EXISTING:-0}" = "1" ] || return 0
+  [ -f docker-compose.yml ] || return 0
+  grep -qE 'mysql_data:/var/lib/mysql|backend_logs:/app/logs' docker-compose.yml || return 0
+
+  echo "🔄 检测到旧版 named volume，准备迁移到宿主机绑定目录..."
+  # 复制 MySQL 数据前先停止服务；失败时恢复旧 Compose 的容器。
+  $DOCKER_CMD stop >/dev/null 2>&1 || true
+  if ! migrate_named_volume_to_bind mysql_data data/mysql \
+      || ! migrate_named_volume_to_bind backend_logs logs/backend; then
+    echo "❌ named volume 迁移失败，正在尝试恢复旧面板..."
+    $DOCKER_CMD up -d >/dev/null 2>&1 || true
+    return 1
+  fi
+  echo "   ✔ 历史数据已复制到宿主机绑定目录"
+}
+
 # 检测系统是否支持 IPv6
 check_ipv6_support() {
   echo "🔍 检测 IPv6 支持..."
@@ -185,7 +221,7 @@ show_menu() {
   echo "  1. 安装面板"
   echo "  2. 更新面板"
   echo "  3. 卸载面板"
-  echo "  4. 彻底清理(卸载并清空容器/镜像/卷/命令)"
+  echo "  4. 彻底清理(卸载并清空容器/镜像/数据目录/命令)"
   echo "  5. 查看运行状态"
   echo "  6. 查看访问信息(地址/账号)"
   echo "  7. 导出数据库备份"
@@ -344,7 +380,7 @@ is_tms_compose() {
 }
 
 purge_panel() {
-  echo "🧨 彻底清理 TMS 面板(删除所有容器/镜像/数据卷/网络/配置和 tms 管理命令)..."
+  echo "🧨 彻底清理 TMS 面板(删除所有容器/镜像/数据目录/网络/配置和 tms 管理命令)..."
 
   # 用 curl 一键跑 purge 时,当前目录多半不是面板安装目录 —— 那样容器能清掉,
   # 但 docker-compose.yml / .env / gost.sql 这些会原地留下,下次安装还会被复用。
@@ -382,8 +418,14 @@ purge_panel() {
   fi
   # 删配置文件 —— 只在确认是 TMS 目录时删。.env 这名字太常见,
   # 在别人的项目目录里跑一下就把人家的环境变量文件删了
-  if is_tms_compose || [ ! -f docker-compose.yml ]; then
+  local confirmed_tms_compose=0
+  is_tms_compose && confirmed_tms_compose=1 || true
+  if [ "$confirmed_tms_compose" = "1" ] || [ ! -f docker-compose.yml ]; then
     rm -f docker-compose.yml docker-compose-v4.yml docker-compose-v6.yml gost.sql .env temp_migration.sql 2>/dev/null || true
+    # 新版 Compose 使用绑定目录，只有确认是 TMS 目录时才清理面板数据和日志。
+    if [ "$confirmed_tms_compose" = "1" ]; then
+      rm -rf data/mysql logs/backend 2>/dev/null || true
+    fi
   fi
   # 删管理命令自身
   rm -f /usr/local/bin/tms /usr/local/bin/tms-panel.sh 2>/dev/null || true
@@ -447,8 +489,8 @@ pick_free_port() {
 get_config_params() {
   echo "🔧 自动配置参数（全自动安装，无需交互）..."
 
-  # 重复执行安装脚本时沿用现有数据库凭据和端口,否则新 .env 会和旧卷里的
-  # MySQL 密码不一致,表现为面板启动失败;更糟的是如果顺手删卷还会丢数据。
+  # 重复执行安装脚本时沿用现有数据库凭据和端口,否则新 .env 会和旧数据目录里的
+  # MySQL 密码不一致,表现为面板启动失败;更糟的是如果顺手删目录还会丢数据。
   # 只有确认当前目录已有 TMS compose 且配置完整时才走恢复分支,避免误读其它项目的 .env。
   if [ "${PRESERVE_EXISTING:-0}" = "1" ]; then
     local old_db_name old_db_user old_db_password old_jwt old_frontend old_backend
@@ -465,7 +507,7 @@ get_config_params() {
       JWT_SECRET="$old_jwt"
       FRONTEND_PORT="${FRONTEND_PORT:-${old_frontend:-6366}}"
       BACKEND_PORT="${BACKEND_PORT:-${old_backend:-6365}}"
-      echo "   检测到已有 TMS 配置，将保留数据库凭据、端口和数据卷"
+      echo "   检测到已有 TMS 配置，将保留数据库凭据、端口和数据目录"
     else
       echo "   现有 .env 配置不完整，按新安装处理"
       PRESERVE_EXISTING=0
@@ -540,7 +582,6 @@ install_panel() {
     echo "❌ 配置文件下载失败或内容不对(可能下到了错误页),请检查网络后重试"
     exit 1
   fi
-  mv -f docker-compose.yml.new docker-compose.yml
   if [[ ! -f "gost.sql" ]]; then
     if ! curl -fsSL -o gost.sql.new "$GOST_SQL_URL" \
         || ! grep -qi "CREATE TABLE" gost.sql.new; then
@@ -568,9 +609,9 @@ BACKEND_PORT=$BACKEND_PORT
 TMS_IPV6=$TMS_IPV6
 EOF
 
-  # 新机器清掉上一次失败留下的半初始化卷;已有 TMS 安装只停容器,绝不删卷,
+  # 新机器清掉上一次失败留下的半初始化数据;已有 TMS 安装只停容器,绝不删目录,
   # 并沿用原 .env,这样重复执行安装相当于一次保数据升级。
-  echo "[2/4] 清理旧容器与数据卷..."
+  echo "[2/4] 清理旧容器与数据目录..."
   if [ "${PRESERVE_EXISTING:-0}" = "1" ]; then
     # 先拉取镜像再停服务。网络或 GHCR 失败时保留旧容器继续运行，
     # 避免重复执行安装把现网面板停在半升级状态。
@@ -580,8 +621,14 @@ EOF
       tail -30 /tmp/tms_install_pull.log
       exit 1
     fi
+    if ! migrate_legacy_storage; then
+      rm -f docker-compose.yml.new
+      exit 1
+    fi
     $DOCKER_CMD down --remove-orphans >/dev/null 2>&1 || true
+    mv -f docker-compose.yml.new docker-compose.yml
   else
+    mv -f docker-compose.yml.new docker-compose.yml
     $DOCKER_CMD down -v --remove-orphans >/dev/null 2>&1 || true
   fi
   docker rm -f gost-mysql springboot-backend vite-frontend >/dev/null 2>&1 || true
@@ -649,6 +696,10 @@ update_panel() {
   echo "🔄 开始更新面板..."
   check_docker
   validate_ipv6_choice
+  PRESERVE_EXISTING=0
+  if [ -f ".env" ] && is_tms_compose; then
+    PRESERVE_EXISTING=1
+  fi
 
   echo "🔽 下载最新配置文件..."
   DOCKER_COMPOSE_URL=$(get_docker_compose_url)
@@ -656,6 +707,11 @@ update_panel() {
   # 直接 curl -o docker-compose.yml 的话,一旦 404("Not Found" 9 字节)就把现有配置
   # 冲成垃圾,面板当场起不来、还回不去(踩过)。
   if curl -fsSL -o docker-compose.yml.new "$DOCKER_COMPOSE_URL" && grep -q "services:" docker-compose.yml.new; then
+    if ! migrate_legacy_storage; then
+      rm -f docker-compose.yml.new
+      echo "❌ 保留原有 Compose 配置并终止更新"
+      return 1
+    fi
     mv -f docker-compose.yml.new docker-compose.yml
     echo "      ✔ 配置文件已更新"
   else
@@ -677,11 +733,11 @@ update_panel() {
     return 1
   fi
 
-  # 不先 down:Compose up 会按需重建镜像对应的容器,同时保留数据卷。
+  # 不先 down:Compose up 会按需重建镜像对应的容器,同时保留绑定目录。
   # 先 down 再 up 会制造无意义的停机窗口,而且 up 失败时旧容器已经没了。
   echo "🚀 启动更新后的服务..."
   if ! $DOCKER_CMD up -d --force-recreate >/tmp/tms_up.log 2>&1; then
-    echo "❌ 更新后的服务启动失败,数据卷未删除;部分容器可能已重建。"
+    echo "❌ 更新后的服务启动失败,数据目录未删除;部分容器可能已重建。"
     tail -30 /tmp/tms_up.log
     echo "🛑 更新终止,请检查日志后重试"
     return 1
@@ -1330,7 +1386,7 @@ UPDATE \`statistics_flow\`
 SET \`created_time\` = UNIX_TIMESTAMP() * 1000
 WHERE \`created_time\` = 0 OR \`created_time\` IS NULL;
 
--- 合体面板协议 schema:旧库升级时也必须补齐,不能只依赖新卷 init.sql。
+-- 合体面板协议 schema:旧库升级时也必须补齐,不能只依赖新安装 init.sql。
 CREATE TABLE IF NOT EXISTS \`inbound\` (
   \`id\` int(10) NOT NULL AUTO_INCREMENT,
   \`node_id\` int(10) NOT NULL,
@@ -1763,7 +1819,7 @@ EOF
 # 卸载功能(交互确认后走彻底清理,保证卸干净)
 uninstall_panel() {
   echo "🗑️ 开始卸载面板..."
-  read -p "确认卸载吗？将停止并删除所有容器、镜像、数据卷和配置 (y/N): " confirm
+  read -p "确认卸载吗？将停止并删除所有容器、镜像、数据目录和配置 (y/N): " confirm
   if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
     echo "❌ 取消卸载"
     return 0

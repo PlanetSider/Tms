@@ -44,12 +44,12 @@ cmd_update() {
   cmd_status
 }
 
-# 彻底清理:容器、本地构建的镜像、数据卷、网络、管理命令 全删。
+# 彻底清理:容器、本地构建的镜像、宿主机数据目录、网络、管理命令 全删。
 # 刻意不调 need_panel —— 卸载正是在「面板已经不完整」时最需要能用,
 # 再加一道「必须像面板目录」的检查,就成了装坏了反而卸不掉的死锁。
 cmd_purge() {
   echo "🧨 彻底清理 TMS 面板(合体 / 源码版)"
-  echo "   会删除:容器、本地构建的镜像、数据卷(含数据库数据)、网络、tms 命令"
+  echo "   会删除:容器、本地构建的镜像、宿主机数据目录(含数据库数据)、网络、tms 命令"
   read -rp "确认吗? (y/N): " c
   if [ "$c" != "y" ] && [ "$c" != "Y" ]; then
     echo "❌ 已取消"
@@ -66,6 +66,8 @@ cmd_purge() {
   # 卷名会被 compose 加上项目名前缀(项目名 = 目录名),写死 mysql_data 删不掉。
   # 按后缀匹配才能把 xxx_mysql_data 这种一并带走。
   docker volume ls -q 2>/dev/null     | grep -E '(^|_)(mysql_data|backend_logs|tms_caddy_data|tms_caddy_config)$'     | xargs -r docker volume rm 2>/dev/null || true
+
+  rm -rf "$PANEL_DIR/data/mysql" "$PANEL_DIR/logs/backend" 2>/dev/null || true
 
   docker network ls -q --filter name=gost-network 2>/dev/null | xargs -r docker network rm 2>/dev/null || true
   docker image prune -f 2>/dev/null || true
@@ -133,7 +135,7 @@ cmd_menu() {
     echo " 4) 重启"
     echo " 5) 停止"
     echo " 6) 启动"
-    echo " 7) 彻底卸载(删容器/镜像/数据卷,含数据库数据)"
+    echo " 7) 彻底卸载(删容器/镜像/数据目录,含数据库数据)"
     echo " 0) 退出"
     echo "------------------------------"
     read -rp "请选择: " choice

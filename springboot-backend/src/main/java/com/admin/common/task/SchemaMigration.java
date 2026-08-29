@@ -38,7 +38,7 @@ public class SchemaMigration implements ApplicationRunner {
                 "ALTER TABLE `node` ADD COLUMN `domain` VARCHAR(255) NULL COMMENT '连接域名(可选,留空用 server_ip)'");
 
         // 协议/中转功能是在已有裸机版本之后加入的。MySQL 的 initdb 脚本只会在
-        // 空卷执行,所以这里也要补齐合体 schema,否则更新镜像后旧库会在第一次
+        // 空数据目录执行,所以这里也要补齐合体 schema,否则更新镜像后旧库会在第一次
         // 访问 inbound/landing 时直接报 Unknown table/column。
         addColumnIfMissing("node", "cert_mode",
                 "ALTER TABLE `node` ADD COLUMN `cert_mode` INT(10) NOT NULL DEFAULT 0 COMMENT '0=无域名(Reality/自签) 1=有域名TLS'");

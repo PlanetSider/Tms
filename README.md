@@ -66,14 +66,14 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 | `backend` | Spring Boot API、WebSocket 和定时任务 | `6365` |
 | `frontend` | 管理页面和订阅页面 | `6366` |
 
-后端等待 MySQL 健康后启动，前端等待后端健康后启动。MySQL 使用 `mysql_data` 卷，后端日志使用 `backend_logs` 卷；更新和重复执行 Compose 不会删除这两个卷。
+后端等待 MySQL 健康后启动，前端等待后端健康后启动。MySQL 数据直接绑定到 `./data/mysql/`，后端日志绑定到 `./logs/backend/`；更新和重复执行 Compose 不会删除这些宿主机目录。
 
 ### 节点使用单镜像和 host network
 
 节点使用 `docker-compose-node.yml`，一个容器内同时运行 TMS Agent、GOST 和 sing-box：
 
 - 使用 `network_mode: host`，保留面板下发的 TCP、UDP 和端口转发行为，不需要在 Compose 中逐项映射端口。
-- 使用 `node_data` 卷保存 `/etc/gost/config.json`、GOST 配置、sing-box 配置和证书。
+- 使用节点目录下的 `./data/` 绑定目录保存 `/etc/gost/config.json`、GOST 配置、sing-box 配置和证书。
 - 使用容器自带的 sing-box，不依赖宿主机安装 gost 或 sing-box 裸二进制。
 - 使用自动重启、进程健康检查、较大的文件描述符上限和转发所需的网络能力。
 - 节点镜像提供 amd64 和 arm64 架构；生产节点建议使用 Linux Docker Engine，Docker Desktop 的 host network 行为不等同于 Linux。
@@ -82,11 +82,13 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 
 | 文件 | 场景 | 说明 |
 |---|---|---|
-| `docker-compose.yml` | 面板生产部署（默认） | IPv4 bridge，直接拉取 GHCR 预构建镜像 |
-| `docker-compose-v4.yml` | 面板生产部署 | 默认配置，Docker bridge 内部使用 IPv4 |
-| `docker-compose-v6.yml` | 面板生产部署 | 设置 `TMS_IPV6=1` 后使用，需要 Docker daemon 支持 IPv6 |
-| `docker-compose-node.yml` | 节点生产部署 | Agent + GOST + sing-box 单镜像，host network |
-| `docker-compose-hybrid.yml` | 源码测试/联调 | 本地构建前后端镜像，不作为生产升级入口 |
+| `docker-compose.yml` | 面板生产部署（默认） | IPv4 bridge、宿主机目录绑定，直接拉取 GHCR 预构建镜像 |
+| `docker-compose-v4.yml` | 面板生产部署 | 显式 IPv4 bridge、宿主机目录绑定 |
+| `docker-compose-v6.yml` | 面板生产部署 | 启用 Docker IPv6、宿主机目录绑定，需要 daemon 支持 IPv6；网段可用 `TMS_IPV6_SUBNET` 覆盖 |
+| `docker-compose-node.yml` | 节点生产部署 | Agent + GOST + sing-box 单镜像、`./data` 绑定、host network |
+| `docker-compose-hybrid.yml` | 源码测试/联调 | 本地构建前后端镜像、宿主机目录绑定，不作为生产升级入口 |
+
+生产 Compose 不声明 Docker named volume。IPv4 bridge 不指定固定网段，面板容器通过 Compose 内置 DNS 使用 `mysql`、`backend` 等服务名通信，Docker 自动分配的网络地址即可满足需求；不固定 `172.20.0.0/16` 可避免与宿主机 VPN、云网络或其他 Compose 项目冲突。v6 变体保留可覆盖的私有 IPv6 网段，因为部分 Docker daemon 在启用 IPv6 时必须显式提供地址池；如不需要容器内部 IPv6，直接使用默认 `docker-compose.yml`。
 
 ### 旧裸机节点兼容
 
@@ -112,6 +114,7 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 mkdir -p /opt/tms-panel && cd /opt/tms-panel
 git clone https://github.com/PlanetSider/Tms.git .
 cp .env.example .env
+mkdir -p data/mysql logs/backend
 ~~~
 
 编辑 `.env`，至少修改 `DB_PASSWORD` 和 `JWT_SECRET`：
@@ -145,6 +148,7 @@ curl -fsSL https://raw.githubusercontent.com/PlanetSider/Tms/main/docker-compose
 curl -fsSL https://raw.githubusercontent.com/PlanetSider/Tms/main/gost.sql -o gost.sql
 curl -fsSL https://raw.githubusercontent.com/PlanetSider/Tms/main/.env.example -o .env.example
 cp .env.example .env
+mkdir -p data/mysql logs/backend
 ~~~
 
 确实需要 Docker 内部 IPv6 时，下载或 clone `docker-compose-v6.yml`，使用同一个 `.env` 启动：
@@ -227,7 +231,30 @@ docker compose pull
 docker compose up -d --force-recreate
 ~~~
 
-更新不会删除面板数据库卷、日志卷或节点 node_data 卷。面板后端启动时会自动执行幂等数据库迁移。
+更新不会删除面板 `data/mysql/`、`logs/backend/` 或节点 `data/` 目录。面板后端启动时会自动执行幂等数据库迁移。
+
+从旧版 named volume 部署升级时，先停止旧服务并迁移一次数据，再使用新的绑定目录。通过历史 `panel_install.sh update` 或重复安装时，脚本会自动完成面板两个 named volume 的迁移；直接替换 Compose 文件的用户按下面命令手动迁移：
+
+~~~bash
+cd /opt/tms-panel
+docker compose down
+mkdir -p data/mysql logs/backend
+docker run --rm -v mysql_data:/from:ro -v "$PWD/data/mysql":/to alpine sh -c 'cp -a /from/. /to/'
+docker run --rm -v backend_logs:/from:ro -v "$PWD/logs/backend":/to alpine sh -c 'cp -a /from/. /to/'
+docker compose up -d
+~~~
+
+旧节点如果使用 `node_data` named volume，先记录实际卷名（`docker volume ls --format '{{.Name}}' | grep node_data`），再执行以下迁移；将示例中的 `旧节点卷名` 替换为查询结果：
+
+~~~bash
+cd /opt/tms-node
+docker compose down
+mkdir -p data
+docker run --rm -v 旧节点卷名:/from:ro -v "$PWD/data":/to alpine sh -c 'cp -a /from/. /to/'
+docker compose up -d
+~~~
+
+迁移完成并确认服务正常后，旧 named volume 可以手动删除。
 
 如果节点无法拉取 ghcr.io/planetsider/tms-node:latest，先为 Docker 配置可用的网络出口或镜像源，再重新执行上面的 pull 和 up。节点端可用以下命令定位问题：
 
@@ -247,19 +274,20 @@ cd /opt/tms-panel
 docker compose down
 ~~~
 
-`docker compose down` 会停止并删除面板容器和网络，但保留数据库与日志卷。确认要删除数据库数据、日志和面板容器时，再执行：
+`docker compose down` 会停止并删除面板容器和网络，但保留宿主机数据库与日志目录。确认已完成备份、要删除数据库数据和日志时，再执行：
 
 ~~~bash
-docker compose down -v
+rm -rf data/mysql logs/backend
 ~~~
 
 旧脚本部署用户仍可使用 `tms purge`；该命令会连同脚本管理的资源一起清理。
 
-节点机执行 docker compose down 会保留 node_data；执行 docker compose down -v 才会删除节点配置、证书和运行时数据：
+节点机执行 `docker compose down` 会保留 `data/`；确认要删除节点配置、证书和运行时数据时，再删除该目录：
 
 ~~~bash
 cd /opt/tms-node
-docker compose down -v
+docker compose down
+rm -rf data
 ~~~
 
 面板和节点是两个独立的 Compose 项目，卸载一方不会自动删除另一方。
@@ -274,10 +302,10 @@ docker compose down -v
 | `docker compose pull` | 拉取 GitHub Actions 发布的最新镜像 |
 | `docker compose up -d --force-recreate` | 应用镜像或 Compose 配置更新 |
 | `docker compose restart backend` | 仅重启后端容器 |
-| `docker compose down` | 停止面板并保留数据卷 |
-| `docker compose down -v` | 停止面板并删除数据库、日志卷 |
+| `docker compose down` | 停止面板并保留宿主机数据目录 |
+| `rm -rf data/mysql logs/backend` | 删除面板数据库和日志（请先确认备份） |
 
-以上命令均需在面板 Compose 目录（例如 `/opt/tms-panel`）执行。旧脚本部署用户的 `tms`、`tms update`、`tms status`、`tms info`、`tms domain`、`tms export` 和 `tms purge` 命令继续保留兼容，不适用于新 Compose 部署。
+以上命令均需在面板 Compose 目录（例如 `/opt/tms-panel`）执行。绑定目录由 Compose 文件所在目录决定，不要在其他目录执行同一文件。旧脚本部署用户的 `tms`、`tms update`、`tms status`、`tms info`、`tms domain`、`tms export` 和 `tms purge` 命令继续保留兼容，不适用于新 Compose 部署。
 
 ## 免责声明
 

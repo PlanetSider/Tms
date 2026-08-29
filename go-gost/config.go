@@ -192,7 +192,7 @@ func agentConfigPath() string {
 }
 
 // loadOrCreateAgentConfig keeps bare-metal config files working and bootstraps
-// a container config from environment variables when the volume is empty.
+// a container config from environment variables when the persistent directory is empty.
 func loadOrCreateAgentConfig() (*Config, error) {
 	path := agentConfigPath()
 	if _, err := os.Stat(path); err == nil {
@@ -200,7 +200,7 @@ func loadOrCreateAgentConfig() (*Config, error) {
 		secret := os.Getenv("TMS_NODE_SECRET")
 		config, loadErr := LoadConfig(path)
 		if loadErr != nil {
-			// Compose 卷可能保留了损坏或旧格式的 config.json。只要两项环境变量
+			// Compose 持久化目录可能保留了损坏或旧格式的 config.json。只要两项环境变量
 			// 都完整，就用它们重新初始化；裸机没有环境变量时仍返回原始错误。
 			if strings.TrimSpace(addr) == "" || strings.TrimSpace(secret) == "" {
 				return nil, loadErr
@@ -215,7 +215,7 @@ func loadOrCreateAgentConfig() (*Config, error) {
 			return config, nil
 		}
 
-		// Compose 重建容器时 /etc/gost 是持久化 volume,旧配置不能遮住新下发的
+		// Compose 重建容器时 /etc/gost 映射到持久化目录,旧配置不能遮住新下发的
 		// 面板地址和密钥。裸机部署没有这两个环境变量时继续完全使用原配置。
 		if strings.TrimSpace(addr) != "" && strings.TrimSpace(secret) != "" &&
 			(config.Addr != strings.TrimSpace(addr) || config.Secret != strings.TrimSpace(secret)) {
@@ -252,7 +252,7 @@ func loadOrCreateAgentConfig() (*Config, error) {
 // ensureGostConfig prepares the file consumed by go-gost's parser. The Agent
 // bootstrap config is intentionally separate from the proxy configuration.
 // Keep existing gost.json/gost.yaml files intact for bare-metal upgrades, but
-// create an empty JSON config for a fresh Docker volume.
+// create an empty JSON config for a fresh Docker data directory.
 func ensureGostConfig() (string, error) {
 	if path := strings.TrimSpace(cfgFile); path != "" {
 		return path, nil
