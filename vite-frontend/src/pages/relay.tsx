@@ -392,7 +392,7 @@ export default function RelayPage() {
             />
             <Textarea
               label="落地出口(粘贴)"
-              placeholder="住宅socks: IP:端口:账号:密码    协议节点: ss:// / vmess:// / vless:// / trojan:// / hysteria2://"
+              placeholder="住宅socks: IP:端口:账号:密码    协议节点: ss:// / vmess:// / vless:// / trojan:// / hysteria2:// / tuic:// / anytls://"
               minRows={2}
               value={buildForm.link}
               onChange={(e) => { setBuildForm({ ...buildForm, link: e.target.value }); setTestResult(null); }}

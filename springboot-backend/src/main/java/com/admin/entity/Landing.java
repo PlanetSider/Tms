@@ -26,7 +26,7 @@ public class Landing implements Serializable {
     /** 落地名称(自己起,如 泰国住宅) */
     private String name;
 
-    /** socks5/shadowsocks/vmess/vless/trojan/hysteria2 */
+    /** socks5/shadowsocks/vmess/vless/trojan/hysteria2/tuic/anytls */
     private String type;
 
     /** 原始分享链接 */

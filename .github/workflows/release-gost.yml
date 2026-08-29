@@ -1,8 +1,9 @@
-name: release-gost
+name: release-legacy-node
 
-# 合体面板节点端:构建 hybrid gost(带 sing-box 支持)并发布成 release 资产,
-# 让新节点用 install.sh 一键装就自带协议能力。
-# 触发:推送 gost-v* 标签(与 docker 版本标签分开,不污染 :latest 生产镜像)。
+# 旧版裸机节点兼容发布:构建带 sing-box 子进程管理能力的 gost 二进制,
+# 保留 install.sh 供已经使用裸机节点的用户升级。新节点的主路径是
+# .github/workflows/docker-build.yml 构建的 GHCR 镜像 + docker-compose-node.yml。
+# 触发:推送 gost-v* 标签(与面板 Docker 版本标签分开)。
 #   git tag gost-v1 && git push origin gost-v1
 
 on:
@@ -30,6 +31,7 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=mod -trimpath -ldflags "-s -w" -o ../dist/gost-amd64 .
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=mod -trimpath -ldflags "-s -w" -o ../dist/gost-arm64 .
           cp ../install.sh ../dist/install.sh
+          cp ../docker-compose-node.yml ../dist/docker-compose-node.yml
           ls -la ../dist
 
       # 先发 draft:action-gh-release 是「先建 release 再传 asset」,release 一建
@@ -44,10 +46,14 @@ jobs:
             dist/gost-amd64
             dist/gost-arm64
             dist/install.sh
+            dist/docker-compose-node.yml
           body: |
-            合体面板节点端 hybrid gost(内置 sing-box 下发/协议支持)。
-            新节点安装:
-            `curl -L https://github.com/Teminuosi/Tms/releases/latest/download/install.sh -o install.sh && chmod +x install.sh && ./install.sh -a http://面板IP:6365 -s 节点密钥`
+            新节点请优先使用 Docker Compose:
+            面板「转发机监控」生成的安装命令会拉取
+            ghcr.io/planetsider/tms-node:latest 和 docker-compose-node.yml。
+
+            本 Release 同时保留 gost-amd64、gost-arm64 和 install.sh,
+            仅供旧版裸机节点兼容升级。
 
       # asset 全部就位后才真正发布并置为 latest,把上面那个 404 窗口彻底关掉
       - name: Flip draft to published

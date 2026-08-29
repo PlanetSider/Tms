@@ -2,7 +2,7 @@
 # 【本地 build 源码镜像,不拉 :latest,不碰生产】,MySQL 初始化时连 hybrid schema 一起建。
 #
 # 用法(在一台【干净的测试机】上,别和生产面板同机跑,否则容器名/端口冲突):
-#   1) 下源码:curl -L https://github.com/Teminuosi/Tms/archive/refs/heads/main.tar.gz | tar xz && cd Tms-main
+#   1) 下源码:curl -L https://github.com/PlanetSider/Tms/archive/refs/heads/main.tar.gz | tar xz && cd Tms-main
 #   2) 建 .env(见文件末尾示例)
 #   3) docker compose -f docker-compose-hybrid.yml --env-file .env up -d --build
 #      (第一次会本地编译前后端,几分钟)
@@ -13,10 +13,10 @@ services:
     container_name: gost-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
-      MYSQL_DATABASE: ${DB_NAME}
-      MYSQL_USER: ${DB_USER}
-      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      MYSQL_DATABASE: ${DB_NAME:?DB_NAME is required}
+      MYSQL_USER: ${DB_USER:?DB_USER is required}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
       TZ: Asia/Shanghai
     volumes:
       - mysql_data:/var/lib/mysql
@@ -33,9 +33,11 @@ services:
     networks:
       - gost-network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 10s
       timeout: 10s
-      retries: 10
+      retries: 12
+      start_period: 30s
 
   backend:
     build:
@@ -46,14 +48,14 @@ services:
     restart: unless-stopped
     environment:
       DB_HOST: mysql
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-      JWT_SECRET: ${JWT_SECRET}
+      DB_NAME: ${DB_NAME:?DB_NAME is required}
+      DB_USER: ${DB_USER:?DB_USER is required}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       LOG_DIR: /app/logs
       JAVA_OPTS: "-Xms256m -Xmx512m -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
     ports:
-      - "${BACKEND_PORT}:6365"
+      - "${BACKEND_PORT:-6365}:6365"
     volumes:
       - backend_logs:/app/logs
     depends_on:
@@ -61,6 +63,12 @@ services:
         condition: service_healthy
     networks:
       - gost-network
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://localhost:6365/flow/test"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
 
   frontend:
     build:
@@ -70,9 +78,10 @@ services:
     container_name: vite-frontend
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT}:80"
+      - "${FRONTEND_PORT:-6366}:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - gost-network
 

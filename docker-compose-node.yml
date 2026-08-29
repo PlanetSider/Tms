@@ -1,0 +1,31 @@
+services:
+  node:
+    image: ${TMS_NODE_IMAGE:-ghcr.io/planetsider/tms-node:latest}
+    restart: unless-stopped
+    init: true
+    network_mode: host
+    stop_grace_period: 30s
+    environment:
+      TMS_PANEL_ADDR: ${TMS_PANEL_ADDR:?TMS_PANEL_ADDR is required}
+      TMS_NODE_SECRET: ${TMS_NODE_SECRET:?TMS_NODE_SECRET is required}
+      TMS_AGENT_CONFIG: /etc/gost/config.json
+      SINGBOX_BIN: /usr/local/bin/sing-box
+      SINGBOX_RUNTIME_DOWNLOAD: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x tms-node >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    volumes:
+      - node_data:/etc/gost
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+
+volumes:
+  node_data:

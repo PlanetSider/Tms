@@ -10,6 +10,11 @@ export LC_ALL=C
 # IPv6:默认关闭。自动改 Docker daemon.json + 内部 IPv6 网络在部分机器上会导致 mysql 启动失败(容器 unhealthy),
 # 而面板根本不需要 Docker 内部 IPv6(容器间走 IPv4 即可;公网 IPv6 访问靠端口映射,与内部网络无关)。
 # 确实需要 Docker 内部 IPv6 的,安装时加 TMS_IPV6=1 开启。
+# 把选择写入 .env,后续通过常驻 `tms update` 时自动沿用原模式,不会因为
+# 管理脚本进程没有继承安装时的环境变量而把 v6 compose 换回 v4。
+if [ -z "${TMS_IPV6+x}" ] && [ -f ".env" ]; then
+  TMS_IPV6="$(grep -m1 '^TMS_IPV6=' .env 2>/dev/null | cut -d'=' -f2- || true)"
+fi
 TMS_IPV6="${TMS_IPV6:-0}"
 
 # 全局下载地址配置
@@ -18,11 +23,11 @@ TMS_IPV6="${TMS_IPV6:-0}"
 # 而那个 release 里没有 compose 和 gost.sql —— 于是这里会下到 9 字节的 "Not Found",
 # 把 docker-compose.yml 覆盖成垃圾、面板直接起不来(踩过)。
 # raw main 永远是仓库当前内容,不受发版影响。
-DOCKER_COMPOSEV4_URL="https://raw.githubusercontent.com/Teminuosi/Tms/main/docker-compose-v4.yml"
-DOCKER_COMPOSEV6_URL="https://raw.githubusercontent.com/Teminuosi/Tms/main/docker-compose-v6.yml"
-GOST_SQL_URL="https://raw.githubusercontent.com/Teminuosi/Tms/main/gost.sql"
+DOCKER_COMPOSEV4_URL="https://raw.githubusercontent.com/PlanetSider/Tms/main/docker-compose-v4.yml"
+DOCKER_COMPOSEV6_URL="https://raw.githubusercontent.com/PlanetSider/Tms/main/docker-compose-v6.yml"
+GOST_SQL_URL="https://raw.githubusercontent.com/PlanetSider/Tms/main/gost.sql"
 # 管理脚本自身的 raw 地址(curl|bash 场景下 tms 命令的兜底下载源)
-PANEL_INSTALL_RAW_URL="https://raw.githubusercontent.com/Teminuosi/Tms/main/panel_install.sh"
+PANEL_INSTALL_RAW_URL="https://raw.githubusercontent.com/PlanetSider/Tms/main/panel_install.sh"
 
 COUNTRY=$(curl -s --max-time 5 https://ipinfo.io/country || true)
 if [ "$COUNTRY" = "CN" ]; then
@@ -118,7 +123,7 @@ configure_docker_ipv6() {
   # 检查 Docker 配置文件
   if [ -f "$DOCKER_CONFIG" ]; then
     # 检查是否已经配置了 IPv6
-    if grep -q '"ipv6"' "$DOCKER_CONFIG"; then
+    if grep -Eq '"ipv6"[[:space:]]*:[[:space:]]*true' "$DOCKER_CONFIG"; then
       echo "✅ Docker 已配置 IPv6 支持"
     else
       echo "📝 更新 Docker 配置以启用 IPv6..."
@@ -129,8 +134,16 @@ configure_docker_ipv6() {
       if command -v jq &> /dev/null; then
         $SUDO_CMD jq '. + {"ipv6": true, "fixed-cidr-v6": "fd00::/80"}' "$DOCKER_CONFIG" > /tmp/daemon.json && $SUDO_CMD mv /tmp/daemon.json "$DOCKER_CONFIG"
       else
-        # 如果没有 jq，使用 sed
-        $SUDO_CMD sed -i 's/^{$/{\n  "ipv6": true,\n  "fixed-cidr-v6": "fd00::\/80",/' "$DOCKER_CONFIG"
+        # 没有 jq 时尽量原地修正已有 ipv6:false,缺少字段再插入,
+        # 避免重复 JSON key 让 Docker 直接拒绝 daemon.json。
+        if grep -Eq '"ipv6"[[:space:]]*:' "$DOCKER_CONFIG"; then
+          $SUDO_CMD sed -i -E 's/("ipv6"[[:space:]]*:[[:space:]]*)false/\1true/' "$DOCKER_CONFIG"
+        else
+          $SUDO_CMD sed -i 's/^{$/{\n  "ipv6": true,/' "$DOCKER_CONFIG"
+        fi
+        if ! grep -Eq '"fixed-cidr-v6"[[:space:]]*:' "$DOCKER_CONFIG"; then
+          $SUDO_CMD sed -i 's/^{$/{\n  "fixed-cidr-v6": "fd00::\/80",/' "$DOCKER_CONFIG"
+        fi
       fi
 
       echo "🔄 重启 Docker 服务..."
@@ -201,12 +214,14 @@ delete_self() {
 # 收尾信息框:装完最重要的就是「地址/账号/密码」,单独框出来别被上面的日志淹掉
 print_access_box() {
   local ip="$1" fport="$2"
+  local url_ip
+  url_ip="$(format_url_host "$ip")"
   echo ""
   echo "╔══════════════════════════════════════════════════════╗"
   echo "║              TMS 面板安装完成                        ║"
   echo "╚══════════════════════════════════════════════════════╝"
   echo ""
-  echo "    访问地址 :  http://${ip}:${fport}"
+  echo "    访问地址 :  http://${url_ip}:${fport}"
   echo "    账    号 :  admin_user"
   echo "    密    码 :  admin_user"
   echo ""
@@ -214,7 +229,7 @@ print_access_box() {
   echo ""
   echo "  ──────────────────────────────────────────────────────"
   echo "    管理面板 :  输入  tms  (更新/卸载/彻底清理/查看状态)"
-  echo "    项目地址 :  https://github.com/Teminuosi/Tms"
+  echo "    项目地址 :  https://github.com/PlanetSider/Tms"
   echo "  ──────────────────────────────────────────────────────"
   echo ""
 }
@@ -252,11 +267,56 @@ show_status() {
     --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || docker ps -a
 }
 
-# 取本机公网 IP(拿不到就回退成占位串,调用方自己判断)
+# 取本机公网 IP。优先使用同时支持 IPv4/IPv6 的 api64,再回退到 IPv4 服务。
+get_public_ip() {
+  local url ip
+  for url in https://api64.ipify.org https://api.ipify.org https://ipinfo.io/ip; do
+    ip="$(curl -fsS --max-time 8 "$url" 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "$ip" ]; then
+      printf '%s' "$ip"
+      return 0
+    fi
+  done
+  return 1
+}
+
+validate_ipv6_choice() {
+  case "$TMS_IPV6" in
+    0|1) ;;
+    *)
+      echo "❌ TMS_IPV6 只能是 0 或 1,当前值: $TMS_IPV6"
+      exit 1
+      ;;
+  esac
+}
+
+# 对外展示时保留占位串,安装流程写数据库时则使用上面的空失败结果。
 get_server_ip() {
-  curl -s --max-time 8 https://api.ipify.org 2>/dev/null \
-    || curl -s --max-time 8 https://ipinfo.io/ip 2>/dev/null \
-    || echo '你的服务器IP'
+  get_public_ip || echo '你的服务器IP'
+}
+
+# URL 中的 IPv6 主机需要方括号,否则浏览器会把冒号误解为端口分隔符。
+format_url_host() {
+  local host="$1"
+  host="${host#[}"
+  host="${host%]}"
+  if [[ "$host" == *:* ]]; then
+    printf '[%s]' "$host"
+  else
+    printf '%s' "$host"
+  fi
+}
+
+# 拼接后端 host:port。IPv6 必须给主机部分加方括号,否则地址会被误拆成多段端口。
+format_host_port() {
+  local host="$1" port="$2"
+  host="${host#[}"
+  host="${host%]}"
+  if [[ "$host" == *:* ]]; then
+    printf '[%s]:%s' "$host" "$port"
+  else
+    printf '%s:%s' "$host" "$port"
+  fi
 }
 
 # 取面板前端端口(.env 里的,默认 6366)
@@ -280,7 +340,7 @@ show_access_info() {
 # purge 里的 `down -v --rmi all` 和 `rm .env` 杀伤力很大,在别人的项目目录里
 # 跑一下能把人家的容器、数据卷、镜像连同 .env 一锅端 —— 认准了再动手。
 is_tms_compose() {
-  [ -f docker-compose.yml ] && grep -q "teminuosi\|gost-mysql" docker-compose.yml
+  [ -f docker-compose.yml ] && grep -q "planetsider\|teminuosi\|gost-mysql" docker-compose.yml
 }
 
 purge_panel() {
@@ -315,7 +375,8 @@ purge_panel() {
     docker volume rm mysql_data backend_logs tms_caddy_data tms_caddy_config 2>/dev/null || true
     docker volume ls -q 2>/dev/null       | grep -E '(^|_)(mysql_data|backend_logs|tms_caddy_data|tms_caddy_config)$'       | xargs -r docker volume rm 2>/dev/null || true
     docker network rm gost-network 2>/dev/null || true
-    docker rmi -f ghcr.io/teminuosi/springboot-backend:latest ghcr.io/teminuosi/vite-frontend:latest mysql:5.7 2>/dev/null || true
+    docker rmi -f ghcr.io/planetsider/springboot-backend:latest ghcr.io/planetsider/vite-frontend:latest \
+      ghcr.io/teminuosi/springboot-backend:latest ghcr.io/teminuosi/vite-frontend:latest mysql:5.7 2>/dev/null || true
     # 只清悬空镜像(不动其他应用),回收磁盘
     docker image prune -f 2>/dev/null || true
   fi
@@ -357,6 +418,11 @@ port_in_use() {
   return 1
 }
 
+is_valid_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
 pick_free_port() {
   # 三个变量必须分开声明:挤在一个 local 里时算术展开拿不到值,
   # limit 会是空字符串,while 直接报 integer expression expected 并退出 ——
@@ -364,6 +430,9 @@ pick_free_port() {
   local start="$1"
   local p="$start"
   local limit=$((start + 100))
+  if [ "$limit" -gt 65536 ]; then
+    limit=65536
+  fi
   while [ "$p" -lt "$limit" ]; do
     if ! port_in_use "$p"; then
       echo "$p"
@@ -371,46 +440,115 @@ pick_free_port() {
     fi
     p=$((p + 1))
   done
-  echo "$start"
+  echo "❌ 从端口 $start 起连续检查到 $((limit - 1)) 都已被占用" >&2
+  return 1
 }
 
 get_config_params() {
   echo "🔧 自动配置参数（全自动安装，无需交互）..."
 
+  # 重复执行安装脚本时沿用现有数据库凭据和端口,否则新 .env 会和旧卷里的
+  # MySQL 密码不一致,表现为面板启动失败;更糟的是如果顺手删卷还会丢数据。
+  # 只有确认当前目录已有 TMS compose 且配置完整时才走恢复分支,避免误读其它项目的 .env。
+  if [ "${PRESERVE_EXISTING:-0}" = "1" ]; then
+    local old_db_name old_db_user old_db_password old_jwt old_frontend old_backend
+    old_db_name="$(grep -m1 '^DB_NAME=' .env 2>/dev/null | cut -d'=' -f2-)"
+    old_db_user="$(grep -m1 '^DB_USER=' .env 2>/dev/null | cut -d'=' -f2-)"
+    old_db_password="$(grep -m1 '^DB_PASSWORD=' .env 2>/dev/null | cut -d'=' -f2-)"
+    old_jwt="$(grep -m1 '^JWT_SECRET=' .env 2>/dev/null | cut -d'=' -f2-)"
+    old_frontend="$(grep -m1 '^FRONTEND_PORT=' .env 2>/dev/null | cut -d'=' -f2-)"
+    old_backend="$(grep -m1 '^BACKEND_PORT=' .env 2>/dev/null | cut -d'=' -f2-)"
+    if [[ -n "$old_db_name" && -n "$old_db_user" && -n "$old_db_password" && -n "$old_jwt" ]]; then
+      DB_NAME="$old_db_name"
+      DB_USER="$old_db_user"
+      DB_PASSWORD="$old_db_password"
+      JWT_SECRET="$old_jwt"
+      FRONTEND_PORT="${FRONTEND_PORT:-${old_frontend:-6366}}"
+      BACKEND_PORT="${BACKEND_PORT:-${old_backend:-6365}}"
+      echo "   检测到已有 TMS 配置，将保留数据库凭据、端口和数据卷"
+    else
+      echo "   现有 .env 配置不完整，按新安装处理"
+      PRESERVE_EXISTING=0
+    fi
+  fi
+
   # 端口可用环境变量覆盖(FRONTEND_PORT=xxx BACKEND_PORT=xxx),否则用默认值,不再交互
   FRONTEND_PORT=${FRONTEND_PORT:-6366}
   BACKEND_PORT=${BACKEND_PORT:-6365}
 
+  if ! is_valid_port "$FRONTEND_PORT"; then
+    echo "❌ FRONTEND_PORT 必须是1-65535范围内的整数,当前值: $FRONTEND_PORT"
+    exit 1
+  fi
+  if ! is_valid_port "$BACKEND_PORT"; then
+    echo "❌ BACKEND_PORT 必须是1-65535范围内的整数,当前值: $BACKEND_PORT"
+    exit 1
+  fi
+
   # 端口被别的服务占着的话自动往后挪,免得容器起不来只在日志里留一行
   # "address already in use" —— 那种失败看着像面板装坏了,其实只是端口冲突
   local want_f="$FRONTEND_PORT" want_b="$BACKEND_PORT"
-  FRONTEND_PORT=$(pick_free_port "$FRONTEND_PORT")
-  BACKEND_PORT=$(pick_free_port "$BACKEND_PORT")
-  [ "$FRONTEND_PORT" != "$want_f" ] && echo "   ⚠️ 端口 $want_f 被占用,前端改用 $FRONTEND_PORT"
-  [ "$BACKEND_PORT" != "$want_b" ] && echo "   ⚠️ 端口 $want_b 被占用,后端改用 $BACKEND_PORT"
+  if [ "${PRESERVE_EXISTING:-0}" != "1" ]; then
+    FRONTEND_PORT=$(pick_free_port "$FRONTEND_PORT") || exit 1
+    if [ "$BACKEND_PORT" -eq "$FRONTEND_PORT" ]; then
+      if [ "$BACKEND_PORT" -eq 65535 ]; then
+        echo "❌ 前后端端口不能相同,且 BACKEND_PORT 已到 65535,请显式指定不同端口"
+        exit 1
+      fi
+      BACKEND_PORT=$((BACKEND_PORT + 1))
+    fi
+    BACKEND_PORT=$(pick_free_port "$BACKEND_PORT") || exit 1
+    if [ "$BACKEND_PORT" -eq "$FRONTEND_PORT" ]; then
+      if [ "$BACKEND_PORT" -eq 65535 ]; then
+        echo "❌ 前后端最终选择到了同一端口 65535,请显式指定不同端口"
+        exit 1
+      fi
+      BACKEND_PORT=$(pick_free_port "$((BACKEND_PORT + 1))") || exit 1
+    fi
+    [ "$FRONTEND_PORT" != "$want_f" ] && echo "   ⚠️ 端口 $want_f 被占用,前端改用 $FRONTEND_PORT"
+    [ "$BACKEND_PORT" != "$want_b" ] && echo "   ⚠️ 端口 $want_b 被占用,后端改用 $BACKEND_PORT"
+  fi
 
   echo "   前端端口：$FRONTEND_PORT   后端端口：$BACKEND_PORT"
 
-  DB_NAME=$(generate_random)
-  DB_USER=$(generate_random)
-  DB_PASSWORD=$(generate_random)
-  JWT_SECRET=$(generate_random)
+  if [ "${PRESERVE_EXISTING:-0}" != "1" ]; then
+    DB_NAME=$(generate_random)
+    DB_USER=$(generate_random)
+    DB_PASSWORD=$(generate_random)
+    JWT_SECRET=$(generate_random)
+  fi
 }
 
 # 安装功能
 install_panel() {
   echo "🚀 开始安装面板..."
   check_docker
+  validate_ipv6_choice
+  PRESERVE_EXISTING=0
+  if [ -f ".env" ] && is_tms_compose; then
+    PRESERVE_EXISTING=1
+  fi
   get_config_params
 
   echo "[1/4] 下载配置文件..."
   DOCKER_COMPOSE_URL=$(get_docker_compose_url)
-  # -fsSL:404 直接失败而不是把 "Not Found" 写进文件;静默但保留错误提示
-  curl -fsSL -o docker-compose.yml "$DOCKER_COMPOSE_URL" || { echo "❌ 下载配置文件失败,请检查网络"; exit 1; }
-  grep -q "services:" docker-compose.yml || { echo "❌ 配置文件内容不对(可能下到了错误页),请重试"; exit 1; }
+  # 先下载到临时文件并校验,再替换正式文件。即使安装中断或网络返回错误页,
+  # 也不会把半截 compose 留在目录里影响下一次重试。
+  if ! curl -fsSL -o docker-compose.yml.new "$DOCKER_COMPOSE_URL" \
+      || ! grep -q "services:" docker-compose.yml.new; then
+    rm -f docker-compose.yml.new
+    echo "❌ 配置文件下载失败或内容不对(可能下到了错误页),请检查网络后重试"
+    exit 1
+  fi
+  mv -f docker-compose.yml.new docker-compose.yml
   if [[ ! -f "gost.sql" ]]; then
-    curl -fsSL -o gost.sql "$GOST_SQL_URL" || { echo "❌ 下载数据库文件失败,请检查网络"; exit 1; }
-    grep -qi "CREATE TABLE" gost.sql || { echo "❌ 数据库文件内容不对,请重试"; exit 1; }
+    if ! curl -fsSL -o gost.sql.new "$GOST_SQL_URL" \
+        || ! grep -qi "CREATE TABLE" gost.sql.new; then
+      rm -f gost.sql.new
+      echo "❌ 数据库文件下载失败或内容不对,请检查网络后重试"
+      exit 1
+    fi
+    mv -f gost.sql.new gost.sql
   fi
   echo "      ✔ 完成"
 
@@ -427,16 +565,29 @@ DB_PASSWORD=$DB_PASSWORD
 JWT_SECRET=$JWT_SECRET
 FRONTEND_PORT=$FRONTEND_PORT
 BACKEND_PORT=$BACKEND_PORT
+TMS_IPV6=$TMS_IPV6
 EOF
 
-  # 清理上一次失败/中断留下的旧容器与数据卷。
-  # 关键坑:MySQL 初始化中断过一次后,mysql_data 卷里会残留半拉子文件,
-  # 再启动时报 "--initialize specified but the data directory has files in it. Aborting.",
-  # 容器一直 unhealthy。全新安装本就该是干净空卷,这里强制清一遍,保证一键装到底。
-  echo "[2/4] 清理旧容器与数据卷(确保全新安装干净)..."
-  $DOCKER_CMD down -v --remove-orphans >/dev/null 2>&1 || true
+  # 新机器清掉上一次失败留下的半初始化卷;已有 TMS 安装只停容器,绝不删卷,
+  # 并沿用原 .env,这样重复执行安装相当于一次保数据升级。
+  echo "[2/4] 清理旧容器与数据卷..."
+  if [ "${PRESERVE_EXISTING:-0}" = "1" ]; then
+    # 先拉取镜像再停服务。网络或 GHCR 失败时保留旧容器继续运行，
+    # 避免重复执行安装把现网面板停在半升级状态。
+    if ! $DOCKER_CMD pull >/tmp/tms_install_pull.log 2>&1; then
+      echo "❌ 镜像拉取失败，现有面板未停止，保留原服务继续运行。"
+      echo "  常见原因是 GHCR 网络或登录限制，请检查网络后重试。"
+      tail -30 /tmp/tms_install_pull.log
+      exit 1
+    fi
+    $DOCKER_CMD down --remove-orphans >/dev/null 2>&1 || true
+  else
+    $DOCKER_CMD down -v --remove-orphans >/dev/null 2>&1 || true
+  fi
   docker rm -f gost-mysql springboot-backend vite-frontend >/dev/null 2>&1 || true
-  docker volume rm mysql_data backend_logs >/dev/null 2>&1 || true
+  if [ "${PRESERVE_EXISTING:-0}" != "1" ]; then
+    docker volume rm mysql_data backend_logs >/dev/null 2>&1 || true
+  fi
   echo "      ✔ 完成"
 
   echo "[3/4] 拉取镜像并启动服务(首次约 1-3 分钟,请耐心等待)..."
@@ -450,20 +601,21 @@ EOF
 
   # 自动写入「面板后端地址」(转发机对接要用),省得登录后再手动到网站配置里填
   echo "[4/4] 检测公网IP并配置面板后端地址..."
-  PUBLIC_IP=$(curl -s --max-time 8 https://api.ipify.org || curl -s --max-time 8 https://ipinfo.io/ip || echo "")
+  PUBLIC_IP="$(get_public_ip || true)"
   if [ -n "$PUBLIC_IP" ]; then
+    PANEL_ADDR="$(format_host_port "$PUBLIC_IP" "$BACKEND_PORT")"
     for i in $(seq 1 30); do
       if docker exec gost-mysql mysqladmin ping -h localhost --silent >/dev/null 2>&1; then
         if docker exec gost-mysql mysql -u"$DB_USER" -p"$DB_PASSWORD" "$DB_NAME" \
-             -e "INSERT IGNORE INTO vite_config (name, value, time) VALUES ('ip', '${PUBLIC_IP}:${BACKEND_PORT}', $(date +%s)000);" >/dev/null 2>&1; then
-          echo "      ✔ 后端地址已设为 ${PUBLIC_IP}:${BACKEND_PORT}"
+             -e "INSERT IGNORE INTO vite_config (name, value, time) VALUES ('ip', '${PANEL_ADDR}', $(date +%s)000);" >/dev/null 2>&1; then
+          echo "      ✔ 后端地址已设为 ${PANEL_ADDR}"
         fi
         break
       fi
       sleep 2
     done
   else
-    echo "      ⚠ 未获取到公网IP,登录后请到「网站配置」手动填(格式 IP:${BACKEND_PORT})"
+    echo "      ⚠ 未获取到公网IP,登录后请到「网站配置」手动填(格式 IP:${BACKEND_PORT},IPv6 请填 [IP]:${BACKEND_PORT})"
   fi
 
   # 安装常驻管理命令 tms
@@ -496,6 +648,7 @@ update_panel() {
 
   echo "🔄 开始更新面板..."
   check_docker
+  validate_ipv6_choice
 
   echo "🔽 下载最新配置文件..."
   DOCKER_COMPOSE_URL=$(get_docker_compose_url)
@@ -516,14 +669,23 @@ update_panel() {
     configure_docker_ipv6
   fi
 
-  echo "🛑 停止当前服务..."
-  $DOCKER_CMD down
-
   echo "⬇️ 拉取最新镜像..."
-  $DOCKER_CMD pull
+  if ! $DOCKER_CMD pull >/tmp/tms_pull.log 2>&1; then
+    echo "✘ 镜像拉取失败，现有容器未停止，面板仍可继续提供服务。"
+    echo "  常见原因是 GHCR 网络或登录限制，请检查网络后重试。"
+    tail -30 /tmp/tms_pull.log
+    return 1
+  fi
 
+  # 不先 down:Compose up 会按需重建镜像对应的容器,同时保留数据卷。
+  # 先 down 再 up 会制造无意义的停机窗口,而且 up 失败时旧容器已经没了。
   echo "🚀 启动更新后的服务..."
-  $DOCKER_CMD up -d
+  if ! $DOCKER_CMD up -d --force-recreate >/tmp/tms_up.log 2>&1; then
+    echo "❌ 更新后的服务启动失败,数据卷未删除;部分容器可能已重建。"
+    tail -30 /tmp/tms_up.log
+    echo "🛑 更新终止,请检查日志后重试"
+    return 1
+  fi
 
   # 等待服务启动
   echo "⏳ 等待服务启动..."
@@ -1167,6 +1329,96 @@ DEALLOCATE PREPARE stmt;
 UPDATE \`statistics_flow\`
 SET \`created_time\` = UNIX_TIMESTAMP() * 1000
 WHERE \`created_time\` = 0 OR \`created_time\` IS NULL;
+
+-- 合体面板协议 schema:旧库升级时也必须补齐,不能只依赖新卷 init.sql。
+CREATE TABLE IF NOT EXISTS \`inbound\` (
+  \`id\` int(10) NOT NULL AUTO_INCREMENT,
+  \`node_id\` int(10) NOT NULL,
+  \`tag\` varchar(100) NOT NULL,
+  \`protocol\` varchar(50) NOT NULL,
+  \`listen_port\` int(10) NOT NULL,
+  \`security\` varchar(20) NOT NULL DEFAULT 'reality',
+  \`sni\` varchar(255) DEFAULT NULL,
+  \`dest\` varchar(255) DEFAULT NULL,
+  \`public_key\` varchar(255) DEFAULT NULL,
+  \`private_key\` varchar(255) DEFAULT NULL,
+  \`short_id\` varchar(100) DEFAULT NULL,
+  \`config_json\` longtext,
+  \`remark\` varchar(255) DEFAULT NULL,
+  \`status\` int(10) NOT NULL DEFAULT 1,
+  \`created_time\` bigint(20) NOT NULL,
+  \`updated_time\` bigint(20) DEFAULT NULL,
+  PRIMARY KEY (\`id\`), KEY \`idx_inbound_node\` (\`node_id\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS \`inbound_user\` (
+  \`id\` int(10) NOT NULL AUTO_INCREMENT,
+  \`inbound_id\` int(10) NOT NULL,
+  \`user_id\` int(10) NOT NULL,
+  \`uuid\` varchar(100) DEFAULT NULL,
+  \`password\` varchar(255) DEFAULT NULL,
+  \`gost_forward_id\` int(10) DEFAULT NULL,
+  \`sub_token\` varchar(100) DEFAULT NULL,
+  \`status\` int(10) NOT NULL DEFAULT 1,
+  \`created_time\` bigint(20) NOT NULL,
+  PRIMARY KEY (\`id\`), KEY \`idx_iu_inbound\` (\`inbound_id\`), KEY \`idx_iu_user\` (\`user_id\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS \`landing\` (
+  \`id\` int(10) NOT NULL AUTO_INCREMENT,
+  \`name\` varchar(100) NOT NULL,
+  \`type\` varchar(30) NOT NULL,
+  \`link\` longtext,
+  \`outbound_json\` longtext,
+  \`remark\` varchar(255) DEFAULT NULL,
+  \`status\` int(10) NOT NULL DEFAULT 1,
+  \`created_time\` bigint(20) NOT NULL,
+  \`updated_time\` bigint(20) DEFAULT NULL,
+  PRIMARY KEY (\`id\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS \`inbound_line\` (
+  \`id\` int(10) NOT NULL AUTO_INCREMENT,
+  \`user_id\` int(10) NOT NULL,
+  \`node_id\` int(10) NOT NULL,
+  \`landing_id\` int(10) DEFAULT NULL,
+  \`sub_token\` varchar(100) DEFAULT NULL,
+  \`flow\` bigint(20) DEFAULT NULL,
+  \`exp_time\` bigint(20) DEFAULT NULL,
+  \`status\` int(10) NOT NULL DEFAULT 1,
+  \`created_time\` bigint(20) NOT NULL,
+  \`updated_time\` bigint(20) DEFAULT NULL,
+  PRIMARY KEY (\`id\`), KEY \`idx_line_user\` (\`user_id\`), KEY \`idx_line_user_node\` (\`user_id\`, \`node_id\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- MySQL 5.7 没有 ADD COLUMN IF NOT EXISTS,用 information_schema 做幂等判断。
+SET @sql = (SELECT IF(NOT EXISTS (
+  SELECT 1 FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = 'node' AND column_name = 'domain'
+), 'ALTER TABLE \`node\` ADD COLUMN \`domain\` VARCHAR(255) DEFAULT NULL COMMENT "连接域名(可选,留空用 server_ip)";', 'SELECT 1'));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = (SELECT IF(NOT EXISTS (
+  SELECT 1 FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = 'node' AND column_name = 'cert_mode'
+), 'ALTER TABLE \`node\` ADD COLUMN \`cert_mode\` INT(10) NOT NULL DEFAULT 0 COMMENT "0=无域名 1=有域名TLS";', 'SELECT 1'));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = (SELECT IF(NOT EXISTS (
+  SELECT 1 FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = 'node' AND column_name = 'cert_path'
+), 'ALTER TABLE \`node\` ADD COLUMN \`cert_path\` VARCHAR(500) DEFAULT NULL;', 'SELECT 1'));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = (SELECT IF(NOT EXISTS (
+  SELECT 1 FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = 'node' AND column_name = 'key_path'
+), 'ALTER TABLE \`node\` ADD COLUMN \`key_path\` VARCHAR(500) DEFAULT NULL;', 'SELECT 1'));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = (SELECT IF(NOT EXISTS (
+  SELECT 1 FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = 'inbound' AND column_name = 'landing_id'
+), 'ALTER TABLE \`inbound\` ADD COLUMN \`landing_id\` INT(10) DEFAULT NULL;', 'SELECT 1'));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = (SELECT IF(NOT EXISTS (
+  SELECT 1 FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = 'user' AND column_name = 'all_sub_token'
+), 'ALTER TABLE \`user\` ADD COLUMN \`all_sub_token\` VARCHAR(64) DEFAULT NULL;', 'SELECT 1'));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- 协议限速不绑定 tunnel,旧库将该列从 NOT NULL 改成可空。
+ALTER TABLE \`speed_limit\` MODIFY COLUMN \`tunnel_id\` BIGINT(20) NULL DEFAULT NULL;
 
 EOF
 

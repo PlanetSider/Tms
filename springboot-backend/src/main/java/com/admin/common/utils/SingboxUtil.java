@@ -8,6 +8,8 @@ import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 
 import java.nio.charset.StandardCharsets;
+import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -15,7 +17,7 @@ import java.util.Map;
 /**
  * sing-box 配置生成 + 下发(合体面板 · 协议侧)。
  * 与 GostUtil 对称:GostUtil 管转发/限速的下发,SingboxUtil 管协议的下发。
- * 节点端 x/socket/singbox.go 收到 SetSingboxConfig 后写文件 + systemd 起 sing-box。
+ * 节点端 x/socket/singbox.go 收到 SetSingboxConfig 后写文件并由 Agent 管理 sing-box。
  * 约束:入站一律 listen 127.0.0.1,公网口交给 gost 转发并限速。
  */
 public class SingboxUtil {
@@ -81,19 +83,17 @@ public class SingboxUtil {
      */
     public static String buildVlessRealityLink(String uuid, String serverIp, Integer port,
                                                String sni, String publicKey, String shortId, String remark) {
-        String frag;
-        try {
-            frag = java.net.URLEncoder.encode(remark == null ? "" : remark, "UTF-8");
-        } catch (Exception e) {
-            frag = "";
+        if (!hasText(uuid) || !validServerHost(serverIp) || !validPort(port)
+                || !validServerName(sni) || !validRealityKey(publicKey) || !validRealityShortId(shortId)) {
+            return "";
         }
-        return "vless://" + uuid + "@" + serverIp + ":" + port
+        return "vless://" + urlEncode(uuid) + "@" + formatHostPort(serverIp, port)
                 + "?encryption=none&flow=xtls-rprx-vision&security=reality"
-                + "&sni=" + (sni == null ? "" : sni)
+                + "&sni=" + urlEncode(sni)
                 + "&fp=chrome"
-                + "&pbk=" + (publicKey == null ? "" : publicKey)
-                + "&sid=" + (shortId == null ? "" : shortId)
-                + "&type=tcp#" + frag;
+                + "&pbk=" + urlEncode(publicKey)
+                + "&sid=" + urlEncode(shortId)
+                + "&type=tcp#" + urlEncode(remark);
     }
 
     /**
@@ -126,15 +126,29 @@ public class SingboxUtil {
                 if (inboundJson == null) {
                     continue;
                 }
-                inboundArr.add(inboundJson);
 
                 // 中转:该入站有落地 → 加落地出站(去重)+ 路由(该入站 tag → 落地出站)
                 Long lid = in.getLandingId();
                 String obJson = (lid != null && landingOutbounds != null) ? landingOutbounds.get(lid) : null;
-                if (lid != null && obJson != null && !obJson.isEmpty()) {
+                if (lid != null) {
+                    // 中转配置缺失或损坏时整条入站都不下发。绝不能保留入站却没有
+                    // 对应路由,否则 route.final=direct 会让本应走落地的流量意外直出。
+                    if (!hasText(obJson)) {
+                        continue;
+                    }
                     String tag = "landing-" + lid;
                     if (addedLandings.add(lid)) {
-                        JSONObject ob = JSON.parseObject(obJson);
+                        JSONObject ob;
+                        try {
+                            ob = JSON.parseObject(obJson);
+                        } catch (Exception ignored) {
+                            addedLandings.remove(lid);
+                            continue;
+                        }
+                        if (!validLandingOutbound(ob)) {
+                            addedLandings.remove(lid);
+                            continue;
+                        }
                         ob.put("tag", tag);
                         outbounds.add(ob);
                     }
@@ -145,6 +159,7 @@ public class SingboxUtil {
                     rule.put("outbound", tag);
                     routeRules.add(rule);
                 }
+                inboundArr.add(inboundJson);
             }
         }
 
@@ -164,7 +179,10 @@ public class SingboxUtil {
 
     /** 按协议生成单个 sing-box 入站 */
     public static JSONObject buildInbound(Inbound in, List<InboundUser> users) {
-        String protocol = in.getProtocol() == null ? "" : in.getProtocol().toLowerCase();
+        if (in == null || !hasText(in.getTag()) || !validPort(in.getListenPort())) {
+            return null;
+        }
+        String protocol = in.getProtocol() == null ? "" : in.getProtocol().trim().toLowerCase(java.util.Locale.ROOT);
         switch (protocol) {
             case "vless":
                 return buildVlessReality(in, users);
@@ -191,21 +209,30 @@ public class SingboxUtil {
      */
     private static JSONObject buildShadowsocks(Inbound in) {
         JSONObject cfg = parseConfig(in.getConfigJson());
+        String method = normalizeShadowsocksMethod(cfg.getString("method"));
+        String password = cfg.getString("password");
+        if (!validShadowsocksPassword(method, password)) {
+            return null;
+        }
         JSONObject inbound = new JSONObject();
         inbound.put("type", "shadowsocks");
         inbound.put("tag", in.getTag());
         inbound.put("listen", "127.0.0.1");
         inbound.put("listen_port", in.getListenPort());
-        inbound.put("method", cfg.getString("method"));
-        inbound.put("password", cfg.getString("password"));
+        inbound.put("method", method);
+        inbound.put("password", password.trim());
         return inbound;
     }
 
     /** 生成 Shadowsocks 客户端分享链接(SIP002:ss://base64url(method:password)@ip:port#remark)。地址=gost 公网口 */
     public static String buildShadowsocksLink(String serverIp, Integer port, String method, String password, String remark) {
+        String normalizedMethod = normalizeShadowsocksMethod(method);
+        if (!validServerHost(serverIp) || !validPort(port) || !validShadowsocksPassword(normalizedMethod, password)) {
+            return "";
+        }
         String userinfo = Base64.getUrlEncoder().withoutPadding()
-                .encodeToString((method + ":" + password).getBytes(StandardCharsets.UTF_8));
-        return "ss://" + userinfo + "@" + serverIp + ":" + port + "#" + urlEncode(remark);
+                .encodeToString((normalizedMethod + ":" + password.trim()).getBytes(StandardCharsets.UTF_8));
+        return "ss://" + userinfo + "@" + formatHostPort(serverIp, port) + "#" + urlEncode(remark);
     }
 
     private static JSONObject parseConfig(String configJson) {
@@ -219,16 +246,199 @@ public class SingboxUtil {
         }
     }
 
+    private static boolean hasText(String value) {
+        return value != null && !value.trim().isEmpty();
+    }
+
+    private static boolean validPort(Integer port) {
+        return port != null && port >= 1 && port <= 65535;
+    }
+
+    private static boolean validLandingOutbound(JSONObject outbound) {
+        if (outbound == null || !validServerHost(outbound.getString("server"))
+                || !validPort(outbound.getInteger("server_port"))) {
+            return false;
+        }
+        String type = outbound.getString("type");
+        type = type == null ? "" : type.trim().toLowerCase(java.util.Locale.ROOT);
+        switch (type) {
+            case "socks":
+                return true;
+            case "shadowsocks":
+                return hasText(outbound.getString("method")) && hasText(outbound.getString("password"));
+            case "vmess":
+            case "vless":
+                return hasText(outbound.getString("uuid"));
+            case "trojan":
+            case "hysteria2":
+                return hasText(outbound.getString("password"));
+            case "tuic":
+                return hasText(outbound.getString("uuid")) && hasText(outbound.getString("password"));
+            case "anytls":
+                return hasText(outbound.getString("password"));
+            default:
+                return false;
+        }
+    }
+
+    private static boolean validRealityShortId(String shortId) {
+        return hasText(shortId) && shortId.trim().matches("(?:[0-9a-fA-F]{2}){1,8}");
+    }
+
+    private static boolean validRealityKey(String key) {
+        return hasText(key) && key.trim().matches("[A-Za-z0-9_-]{20,128}");
+    }
+
+    private static boolean validServerName(String value) {
+        if (!hasText(value)) {
+            return false;
+        }
+        String host = value.trim();
+        return host.length() <= 253
+                && host.matches("[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+");
+    }
+
+    private static boolean validShadowsocksMethod(String method) {
+        String normalized = normalizeShadowsocksMethod(method);
+        if (normalized == null) {
+            return false;
+        }
+        return "2022-blake3-aes-128-gcm".equals(normalized)
+                || "2022-blake3-aes-256-gcm".equals(normalized)
+                || "2022-blake3-chacha20-poly1305".equals(normalized);
+    }
+
+    private static boolean validShadowsocksPassword(String method, String password) {
+        if (!validShadowsocksMethod(method) || !hasText(password)) {
+            return false;
+        }
+        try {
+            int expected = normalizeShadowsocksMethod(method).contains("aes-128") ? 16 : 32;
+            return decodeBase64(password).length == expected;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    /** 同时兼容标准及 URL-safe Base64（分享链接可能省略 padding）。 */
+    private static byte[] decodeBase64(String value) {
+        String normalized = value == null ? "" : value.trim();
+        try {
+            return Base64.getDecoder().decode(normalized);
+        } catch (IllegalArgumentException standardError) {
+            try {
+                return Base64.getUrlDecoder().decode(normalized);
+            } catch (IllegalArgumentException urlError) {
+                throw standardError;
+            }
+        }
+    }
+
+    private static String normalizeShadowsocksMethod(String method) {
+        if (!hasText(method)) {
+            return null;
+        }
+        return method.trim().toLowerCase(java.util.Locale.ROOT);
+    }
+
     private static String urlEncode(String s) {
         try {
-            return java.net.URLEncoder.encode(s == null ? "" : s, "UTF-8");
+            // URLEncoder 面向表单,会把空格编码成 '+'.分享链接的 fragment/query
+            // 中 '+' 是字面字符,因此改成标准的 %20。
+            return java.net.URLEncoder.encode(s == null ? "" : s, "UTF-8")
+                    .replace("+", "%20");
         } catch (Exception e) {
             return "";
         }
     }
 
+    /** URL 协议中的 host:port 格式。IPv6 必须使用方括号,否则冒号会和端口分隔符混淆。 */
+    private static String formatHostPort(String host, Integer port) {
+        String normalized = host == null ? "" : host.trim();
+        boolean bracketed = normalized.startsWith("[");
+        if (bracketed) {
+            int closeBracket = normalized.indexOf(']');
+            if (closeBracket <= 1 || closeBracket != normalized.lastIndexOf(']')) {
+                return "";
+            }
+            String suffix = normalized.substring(closeBracket + 1);
+            if (!suffix.isEmpty() && (!suffix.startsWith(":") || !validPortString(suffix.substring(1)))) {
+                return "";
+            }
+            // 同时兼容传入 [IPv6] 和 [IPv6]:旧端口;端口统一使用当前线路端口。
+            normalized = normalized.substring(1, closeBracket);
+        }
+
+        long colonCount = normalized.chars().filter(ch -> ch == ':').count();
+        if (bracketed || colonCount > 1) {
+            return "[" + normalized + "]:" + port;
+        }
+        if (colonCount == 1) {
+            // 普通 host 不应携带端口;调用方会单独传入线路端口。
+            return "";
+        }
+        return normalized + ":" + port;
+    }
+
+    /** 校验分享链接中的目标主机,避免把 URL/带端口字符串拼成双端口。 */
+    private static boolean validServerHost(String host) {
+        if (!hasText(host)) {
+            return false;
+        }
+        String normalized = host.trim();
+        boolean bracketed = normalized.startsWith("[") || normalized.endsWith("]");
+        if (normalized.startsWith("[") && normalized.endsWith("]")) {
+            normalized = normalized.substring(1, normalized.length() - 1);
+        } else if (normalized.startsWith("[") || normalized.endsWith("]")) {
+            return false;
+        }
+        if (normalized.indexOf('/') >= 0 || normalized.indexOf('?') >= 0
+                || normalized.indexOf('#') >= 0 || normalized.indexOf('@') >= 0) {
+            return false;
+        }
+        if (normalized.indexOf(':') >= 0) {
+            try {
+                return InetAddress.getByName(normalized) instanceof Inet6Address;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+        if (bracketed || normalized.length() > 253) {
+            return false;
+        }
+        if (normalized.matches("[0-9.]+")) {
+            String[] octets = normalized.split("\\.", -1);
+            if (octets.length != 4) {
+                return false;
+            }
+            for (String octet : octets) {
+                try {
+                    if (octet.isEmpty() || Integer.parseInt(octet) > 255) {
+                        return false;
+                    }
+                } catch (NumberFormatException e) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return normalized.matches("[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*");
+    }
+
+    private static boolean validPortString(String value) {
+        try {
+            return validPort(Integer.valueOf(value));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     /** VLESS + Reality 入站(无域名);listen 一律 127.0.0.1,公网口交给 gost 限速 */
     private static JSONObject buildVlessReality(Inbound in, List<InboundUser> users) {
+        if (!validServerName(in.getSni()) || !validRealityKey(in.getPrivateKey())
+                || (hasText(in.getDest()) && !validServerName(in.getDest())) || !validRealityShortId(in.getShortId())) {
+            return null;
+        }
         JSONObject inbound = new JSONObject();
         inbound.put("type", "vless");
         inbound.put("tag", in.getTag());
@@ -253,6 +463,10 @@ public class SingboxUtil {
 
     /** Trojan + Reality 入站(无域名);和 VLESS-Reality 同一套 reality,凭证是 password */
     private static JSONObject buildTrojanReality(Inbound in, List<InboundUser> users) {
+        if (!validServerName(in.getSni()) || !validRealityKey(in.getPrivateKey())
+                || (hasText(in.getDest()) && !validServerName(in.getDest())) || !validRealityShortId(in.getShortId())) {
+            return null;
+        }
         JSONObject inbound = new JSONObject();
         inbound.put("type", "trojan");
         inbound.put("tag", in.getTag());
@@ -289,7 +503,7 @@ public class SingboxUtil {
                 if (u.getStatus() != null && u.getStatus() == 0) continue;
                 JSONObject uj = new JSONObject();
                 uj.put("uuid", u.getUuid());
-                uj.put("alterId", 0);
+                uj.put("alter_id", 0);
                 userArr.add(uj);
             }
         }
@@ -299,32 +513,42 @@ public class SingboxUtil {
 
     /** Reality over TLS 配置块(VLESS / Trojan 共用) */
     private static JSONObject buildRealityTls(Inbound in) {
+        String sni = hasText(in.getSni()) ? in.getSni().trim() : "www.apple.com";
+        String dest = hasText(in.getDest()) ? in.getDest().trim() : sni;
         JSONObject handshake = new JSONObject();
-        handshake.put("server", in.getDest());
+        handshake.put("server", dest);
         handshake.put("server_port", 443);
-
-        JSONArray shortIds = new JSONArray();
-        shortIds.add(in.getShortId() == null ? "" : in.getShortId());
 
         JSONObject reality = new JSONObject();
         reality.put("enabled", true);
         reality.put("handshake", handshake);
         reality.put("private_key", in.getPrivateKey());
-        reality.put("short_id", shortIds);
+        // sing-box Reality 服务端 schema 要求 short_id 是十六进制字符串,
+        // 不是客户端可接受的数组形式;数组会在启动前被 check 拒绝。
+        reality.put("short_id", in.getShortId() == null ? "" : in.getShortId().trim());
 
         JSONObject tls = new JSONObject();
         tls.put("enabled", true);
-        tls.put("server_name", in.getSni());
+        tls.put("server_name", sni);
         tls.put("reality", reality);
         return tls;
     }
 
     /** VMess 客户端链接(vmess://base64(json)) */
     public static String buildVmessLink(String uuid, String serverIp, Integer port, String remark) {
+        if (!hasText(uuid) || !validServerHost(serverIp) || !validPort(port)) {
+            return "";
+        }
         JSONObject v = new JSONObject();
         v.put("v", "2");
         v.put("ps", remark == null ? "" : remark);
-        v.put("add", serverIp);
+        // VMess JSON 的 add 字段只放主机本身;IPv6 的方括号只属于 URL
+        // host:port 语法,写进 JSON 后会被部分客户端当成地址字符。
+        String vmessHost = serverIp.trim();
+        if (vmessHost.startsWith("[") && vmessHost.endsWith("]")) {
+            vmessHost = vmessHost.substring(1, vmessHost.length() - 1);
+        }
+        v.put("add", vmessHost);
         v.put("port", String.valueOf(port));
         v.put("id", uuid);
         v.put("aid", "0");
@@ -342,12 +566,16 @@ public class SingboxUtil {
     /** Trojan + Reality 客户端链接 */
     public static String buildTrojanRealityLink(String password, String serverIp, Integer port,
                                                 String sni, String publicKey, String shortId, String remark) {
-        return "trojan://" + password + "@" + serverIp + ":" + port
+        if (!hasText(password) || !validServerHost(serverIp) || !validPort(port)
+                || !validServerName(sni) || !validRealityKey(publicKey) || !validRealityShortId(shortId)) {
+            return "";
+        }
+        return "trojan://" + urlEncode(password.trim()) + "@" + formatHostPort(serverIp, port)
                 + "?security=reality"
-                + "&sni=" + (sni == null ? "" : sni)
+                + "&sni=" + urlEncode(sni)
                 + "&fp=chrome"
-                + "&pbk=" + (publicKey == null ? "" : publicKey)
-                + "&sid=" + (shortId == null ? "" : shortId)
+                + "&pbk=" + urlEncode(publicKey)
+                + "&sid=" + urlEncode(shortId)
                 + "&type=tcp#" + urlEncode(remark);
     }
 
@@ -360,7 +588,7 @@ public class SingboxUtil {
     private static JSONObject buildSelfTls(Inbound in) {
         JSONObject tls = new JSONObject();
         tls.put("enabled", true);
-        tls.put("server_name", (in.getSni() == null || in.getSni().isEmpty()) ? "www.bing.com" : in.getSni());
+        tls.put("server_name", selfTlsSni(in.getSni()));
         tls.put("certificate_path", SELF_CERT);
         tls.put("key_path", SELF_KEY);
         return tls;
@@ -400,6 +628,7 @@ public class SingboxUtil {
         if (users != null) {
             for (InboundUser u : users) {
                 if (u.getUuid() == null || u.getUuid().isEmpty()) continue;
+                if (!hasText(u.getPassword())) continue;
                 if (u.getStatus() != null && u.getStatus() == 0) continue;
                 JSONObject uj = new JSONObject();
                 uj.put("uuid", u.getUuid());
@@ -440,20 +669,33 @@ public class SingboxUtil {
 
     /** Hysteria2 客户端链接 */
     public static String buildHysteria2Link(String password, String serverIp, Integer port, String sni, String remark) {
-        return "hysteria2://" + password + "@" + serverIp + ":" + port
-                + "?sni=" + (sni == null ? "" : sni) + "&insecure=1#" + urlEncode(remark);
+        if (!hasText(password) || !validServerHost(serverIp) || !validPort(port)) {
+            return "";
+        }
+        return "hysteria2://" + urlEncode(password.trim()) + "@" + formatHostPort(serverIp, port)
+                + "?sni=" + urlEncode(selfTlsSni(sni)) + "&insecure=1#" + urlEncode(remark);
     }
 
     /** TUIC 客户端链接 */
     public static String buildTuicLink(String uuid, String password, String serverIp, Integer port, String sni, String remark) {
-        return "tuic://" + uuid + ":" + password + "@" + serverIp + ":" + port
-                + "?congestion_control=bbr&alpn=h3&sni=" + (sni == null ? "" : sni)
+        if (!hasText(uuid) || !hasText(password) || !validServerHost(serverIp) || !validPort(port)) {
+            return "";
+        }
+        return "tuic://" + urlEncode(uuid.trim()) + ":" + urlEncode(password.trim()) + "@" + formatHostPort(serverIp, port)
+                + "?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=" + urlEncode(selfTlsSni(sni))
                 + "&allow_insecure=1#" + urlEncode(remark);
     }
 
     /** AnyTLS 客户端链接 */
     public static String buildAnyTlsLink(String password, String serverIp, Integer port, String sni, String remark) {
-        return "anytls://" + password + "@" + serverIp + ":" + port
-                + "?insecure=1&sni=" + (sni == null ? "" : sni) + "#" + urlEncode(remark);
+        if (!hasText(password) || !validServerHost(serverIp) || !validPort(port)) {
+            return "";
+        }
+        return "anytls://" + urlEncode(password.trim()) + "@" + formatHostPort(serverIp, port)
+                + "?insecure=1&sni=" + urlEncode(selfTlsSni(sni)) + "#" + urlEncode(remark);
+    }
+
+    private static String selfTlsSni(String sni) {
+        return hasText(sni) ? sni.trim() : "www.bing.com";
     }
 }

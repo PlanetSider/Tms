@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -27,8 +29,9 @@ type TrafficReportItem struct {
 }
 
 func SetHTTPReportURL(addr string, secret string) {
-	httpReportURL = "http://" + addr + "/flow/upload?secret=" + secret
-	configReportURL = "http://" + addr + "/flow/config?secret=" + secret
+	reportScheme, reportHost := normalizeReportAddress(addr)
+	httpReportURL = buildReportURL(reportScheme, reportHost, "/flow/upload", secret)
+	configReportURL = buildReportURL(reportScheme, reportHost, "/flow/config", secret)
 
 	// 创建 AES 加密器
 	var err error
@@ -39,6 +42,56 @@ func SetHTTPReportURL(addr string, secret string) {
 	} else {
 		fmt.Printf("🔐 HTTP AES 加密器创建成功\n")
 	}
+}
+
+// normalizeReportAddress 返回 HTTP 上报协议和 host:port。
+// 旧配置没有协议时使用 http;https/wss 前缀使用 https。
+func normalizeReportAddress(addr string) (string, string) {
+	addr = strings.TrimSpace(addr)
+	scheme := "http"
+	lowerAddr := strings.ToLower(addr)
+	for _, item := range []struct {
+		prefix string
+		scheme string
+	}{
+		{prefix: "http://", scheme: "http"},
+		{prefix: "https://", scheme: "https"},
+		{prefix: "ws://", scheme: "http"},
+		{prefix: "wss://", scheme: "https"},
+	} {
+		if strings.HasPrefix(lowerAddr, item.prefix) {
+			addr = addr[len(item.prefix):]
+			scheme = item.scheme
+			break
+		}
+	}
+	if i := strings.IndexAny(addr, "/?#"); i >= 0 {
+		addr = addr[:i]
+	}
+	addr = strings.TrimSpace(addr)
+
+	// panel_install.sh 和新版面板会保存 [IPv6]:port,这里额外兼容旧配置里
+	// 可能出现的 ::1:port,避免把 IPv6 的冒号误当成多个 host:port 分隔符。
+	if strings.Count(addr, ":") > 1 && !strings.HasPrefix(addr, "[") {
+		if ip := net.ParseIP(addr); ip != nil {
+			return scheme, "[" + addr + "]"
+		}
+		if i := strings.LastIndexByte(addr, ':'); i > 0 {
+			host, port := addr[:i], addr[i+1:]
+			if net.ParseIP(host) != nil {
+				return scheme, net.JoinHostPort(host, port)
+			}
+		}
+	}
+	return scheme, addr
+}
+
+func buildReportURL(scheme string, host string, path string, secret string) string {
+	u := url.URL{Scheme: scheme, Host: host, Path: path}
+	query := u.Query()
+	query.Set("secret", secret)
+	u.RawQuery = query.Encode()
+	return u.String()
 }
 
 // sendTrafficReport 发送流量报告到HTTP接口

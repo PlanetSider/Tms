@@ -84,7 +84,7 @@ export const assignAllToUser = (data: any) => Network.post("/inbound/assign-all"
 export const assignSelf = (data: any) => Network.post("/inbound/assign-self", data);
 export const unassignInboundUser = (id: number) => Network.post("/inbound/unassign", { id });
 // 按【线路】操作(线路 = 车友 × 机器 × 落地;landingId 传 null 表示这台机器的直连)。
-// unassignInboundUser 取消的是单个协议,一条线路有六个,挨个点太蠢。
+// unassignInboundUser 取消的是单个协议,一条线路有七个,挨个点太蠢。
 export const setLineStatus = (userId: number, nodeId: number, landingId: number | null, status: number) =>
   Network.post("/inbound/line-status", { userId, nodeId, landingId, status });
 export const deleteLine = (userId: number, nodeId: number, landingId: number | null) =>
@@ -120,4 +120,4 @@ export const updateConfig = (name: string, value: string) => Network.post("/conf
 // 验证码相关接口
 export const checkCaptcha = () => Network.post("/captcha/check");
 export const generateCaptcha = () => Network.post(`/captcha/generate`);
-export const verifyCaptcha = (data: { captchaId: string; trackData: string }) => Network.post("/captcha/verify", data); 
+export const verifyCaptcha = (data: { captchaId: string; trackData: string }) => Network.post("/captcha/verify", data);

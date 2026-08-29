@@ -24,6 +24,8 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.util.List;
 import java.util.Objects;
 
@@ -367,22 +369,159 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
     private R buildInstallCommand(Node node) {
         ViteConfig viteConfig = viteConfigService.getOne(new QueryWrapper<ViteConfig>().eq("name", "ip"));
         if (viteConfig == null) return R.err("请先前往网站配置中设置ip");
+        if (StrUtil.isBlank(viteConfig.getValue())) return R.err("面板地址不能为空，请先前往网站配置中设置ip");
+        String panelAddressError = validateInstallValue(viteConfig.getValue(), "面板地址");
+        if (panelAddressError != null) return R.err(panelAddressError);
+        panelAddressError = validatePanelAddress(viteConfig.getValue());
+        if (panelAddressError != null) return R.err(panelAddressError);
+        String nodeSecretError = validateInstallValue(node.getSecret(), "节点密钥");
+        if (nodeSecretError != null) return R.err(nodeSecretError);
 
-        StringBuilder command = new StringBuilder();
-        
-        // 第一部分：下载安装脚本  
-        command.append("curl -L https://github.com/Teminuosi/Tms/releases/latest/download/install.sh")
-               .append(" -o ./install.sh && chmod +x ./install.sh && ");
-        
         // 处理服务器地址，如果是IPv6需要添加方括号
         String processedServerAddr = processServerAddress(viteConfig.getValue());
-        
-        // 第二部分：执行安装脚本（去掉-u参数）
-        command.append("./install.sh")
-               .append(" -a ").append(processedServerAddr)  // 服务器地址
-               .append(" -s ").append(node.getSecret());    // 节点密钥
-        
+
+        // 节点使用独立的 Compose 项目，面板只下发公开 Compose 文件和该节点的密钥。
+        String composeUrl = "https://raw.githubusercontent.com/PlanetSider/Tms/main/docker-compose-node.yml";
+        StringBuilder command = new StringBuilder();
+        command.append("mkdir -p /opt/tms-node && cd /opt/tms-node && ")
+               .append("if ! curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 ")
+               .append(shellQuote(composeUrl))
+               .append(" -o docker-compose.yml.new; then rm -f docker-compose.yml.new; echo '节点 Compose 下载失败，请检查 GitHub 网络后重试' >&2; exit 1; fi; ")
+               .append("if ! grep -q '^services:' docker-compose.yml.new; then rm -f docker-compose.yml.new; echo '节点 Compose 内容无效，请重新下载' >&2; exit 1; fi; ")
+               .append("mv -f docker-compose.yml.new docker-compose.yml && ")
+               .append("printf '%s\\n' ")
+               .append(shellQuote("TMS_PANEL_ADDR=" + dotenvQuote(processedServerAddr))).append(" ")
+               .append(shellQuote("TMS_NODE_SECRET=" + dotenvQuote(node.getSecret())))
+               .append(" > .env && chmod 600 .env && ")
+               .append("if docker compose version >/dev/null 2>&1; then ")
+               .append("if ! docker compose pull; then echo '节点镜像拉取失败，请检查 GHCR 网络后重试' >&2; exit 1; fi; ")
+               .append("docker compose up -d --force-recreate; ")
+               .append("elif command -v docker-compose >/dev/null 2>&1; then ")
+               .append("if ! docker-compose pull; then echo '节点镜像拉取失败，请检查 GHCR 网络后重试' >&2; exit 1; fi; ")
+               .append("docker-compose up -d --force-recreate; ")
+               .append("else echo '未找到 Docker Compose，请先安装 Docker Engine 和 Docker Compose' >&2; exit 1; fi");
+
         return R.ok(command.toString());
+    }
+
+    /** 将任意值安全地放入 POSIX shell 单引号字符串中。 */
+    private String shellQuote(String value) {
+        if (value == null) {
+            return "''";
+        }
+        return "'" + value.replace("'", "'\"'\"'") + "'";
+    }
+
+    /** 生成 Compose .env 的双引号字面量，避免 $, #、反斜杠等字符被 dotenv 语法重新解释。 */
+    private String dotenvQuote(String value) {
+        if (value == null) {
+            return "\"\"";
+        }
+        return "\""
+                + value.replace("\\", "\\\\")
+                       .replace("\"", "\\\"")
+                       .replace("$", "$$")
+                + "\"";
+    }
+
+    /** 安装命令通过 printf 生成 .env，换行会让一个值变成多行配置。 */
+    private String validateInstallValue(String value, String fieldName) {
+        if (value != null && (value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0)) {
+            return fieldName + "不能包含换行符";
+        }
+        return null;
+    }
+
+    /**
+     * 校验节点连接面板所需的地址格式。
+     * 网站配置历史上允许填写裸 host:port;新版也支持 http/https URL。
+     * 带协议的域名可以省略端口,由 http/https/ws/wss 分别使用默认端口。
+     */
+    private String validatePanelAddress(String serverAddr) {
+        String address = serverAddr.trim();
+        int schemeEnd = address.indexOf("://");
+        boolean hasScheme = schemeEnd > 0;
+        if (schemeEnd > 0) {
+            String scheme = address.substring(0, schemeEnd);
+            if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)
+                    && !"ws".equalsIgnoreCase(scheme) && !"wss".equalsIgnoreCase(scheme)) {
+                return "面板地址只支持 http://、https://、ws:// 或 wss:// 协议";
+            }
+            address = address.substring(schemeEnd + 3);
+        }
+
+        int pathStart = firstIndexOf(address, '/', '?', '#');
+        if (pathStart >= 0) {
+            String suffix = address.substring(pathStart);
+            if (!"/".equals(suffix)) {
+                return "面板地址不支持路径、查询参数或片段,请填写域名或 IP:端口";
+            }
+            address = address.substring(0, pathStart);
+        }
+        if (address.isEmpty()) {
+            return "面板地址格式无效,请填写 IP:端口、域名:端口或 [IPv6]:端口";
+        }
+
+        if (address.startsWith("[")) {
+            int closeBracket = address.indexOf(']');
+            if (closeBracket <= 1 || closeBracket != address.lastIndexOf(']')) {
+                return "IPv6 面板地址格式无效,请填写 [IPv6]:端口";
+            }
+            String host = address.substring(1, closeBracket);
+            String suffix = address.substring(closeBracket + 1);
+            if (!isIPv6Address(host) || (!suffix.isEmpty() && !suffix.startsWith(":"))) {
+                return "IPv6 面板地址格式无效,请填写 [IPv6]:端口";
+            }
+            if (!suffix.isEmpty() && !isValidPort(suffix.substring(1))) {
+                return "面板地址端口必须在1-65535范围内";
+            }
+            if (suffix.isEmpty() && !hasScheme) {
+                return "裸 IPv6 面板地址必须包含端口,例如 [2001:db8::1]:6365";
+            }
+            return null;
+        }
+
+        if (address.indexOf(']') >= 0 || address.indexOf('[') >= 0 || address.indexOf('@') >= 0) {
+            return "面板地址格式无效,请填写 IP:端口、域名:端口或 [IPv6]:端口";
+        }
+
+        long colonCount = address.chars().filter(ch -> ch == ':').count();
+        if (colonCount == 0) {
+            if (hasScheme && isValidPanelHost(address)) {
+                return null;
+            }
+            return "面板地址必须包含端口,例如 example.com:6365";
+        }
+        if (colonCount == 1) {
+            int colon = address.indexOf(':');
+            String host = address.substring(0, colon);
+            String port = address.substring(colon + 1);
+            if (!isValidPanelHost(host)) {
+                return "面板地址主机格式无效";
+            }
+            if (!isValidPort(port)) {
+                return "面板地址端口必须在1-65535范围内";
+            }
+            return null;
+        }
+
+        // 兼容历史的未加方括号 IPv6:port,下发时会自动规范成 [IPv6]:port。
+        int lastColon = address.lastIndexOf(':');
+        String host = address.substring(0, lastColon);
+        String port = address.substring(lastColon + 1);
+        if (isIPv6Address(host) && isValidPort(port)) {
+            return null;
+        }
+        if (isIPv6Address(address)) {
+            return hasScheme
+                    ? null
+                    : "IPv6 面板地址必须包含端口,例如 [2001:db8::1]:6365";
+        }
+        return "面板地址格式无效,请填写 IP:端口、域名:端口或 [IPv6]:端口";
+    }
+
+    private boolean isValidPanelHost(String host) {
+        return !host.isEmpty() && host.matches("[A-Za-z0-9._-]+");
     }
 
     /**
@@ -395,28 +534,73 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         if (StrUtil.isBlank(serverAddr)) {
             return serverAddr;
         }
-        
-        // 如果已经被方括号包裹，直接返回
-        if (serverAddr.startsWith("[")) {
-            return serverAddr;
+        String address = serverAddr.trim();
+
+        // 网站配置历史上既可能保存 host:port,也可能保存完整 URL。
+        // 保留协议头,让节点可以通过 HTTPS/WSS 连接 Caddy 入口。
+        String scheme = "";
+        int schemeEnd = address.indexOf("://");
+        if (schemeEnd > 0) {
+            scheme = address.substring(0, schemeEnd).toLowerCase();
+            address = address.substring(schemeEnd + 3);
         }
-        
-        // 查找最后一个冒号，分离主机和端口
-        int lastColonIndex = serverAddr.lastIndexOf(':');
-        if (lastColonIndex == -1) {
-            // 没有端口号，直接检查是否需要包裹
-            return isIPv6Address(serverAddr) ? "[" + serverAddr + "]" : serverAddr;
+        int pathStart = firstIndexOf(address, '/', '?', '#');
+        if (pathStart >= 0) {
+            address = address.substring(0, pathStart);
         }
-        
-        String host = serverAddr.substring(0, lastColonIndex);
-        String port = serverAddr.substring(lastColonIndex);
-        
-        // 检查主机部分是否为IPv6地址
-        if (isIPv6Address(host)) {
-            return "[" + host + "]" + port;
+
+        // 已经是 [IPv6]:port 或 [IPv6],不要重复包裹。
+        if (address.startsWith("[")) {
+            int closeBracket = address.indexOf(']');
+            if (closeBracket > 0) {
+                return scheme.isEmpty() ? address : scheme + "://" + address;
+            }
         }
-        
-        return serverAddr;
+
+        // 兼容旧配置中的 IPv6:port。只有端口有效且前半段是 IPv6 时才拆分,
+        // 纯 IPv6 地址则在下面统一补方括号。
+        if (address.chars().filter(ch -> ch == ':').count() > 1) {
+            int lastColon = address.lastIndexOf(':');
+            if (lastColon > 0) {
+                String host = address.substring(0, lastColon);
+                String port = address.substring(lastColon + 1);
+                if (isIPv6Address(host) && isValidPort(port)) {
+                    String result = "[" + host + "]:" + port;
+                    return scheme.isEmpty() ? result : scheme + "://" + result;
+                }
+            }
+        }
+
+        // 判断整个字符串是不是完整的 IPv6,避免把 ::1 误拆成 [:]:1。
+        // 未加方括号的纯 IPv6 地址只补方括号。
+        if (isIPv6Address(address)) {
+            String result = "[" + address + "]";
+            return scheme.isEmpty() ? result : scheme + "://" + result;
+        }
+        return scheme.isEmpty() ? address : scheme + "://" + address;
+    }
+
+    private int firstIndexOf(String value, char... chars) {
+        int index = -1;
+        for (char ch : chars) {
+            int candidate = value.indexOf(ch);
+            if (candidate >= 0 && (index < 0 || candidate < index)) {
+                index = candidate;
+            }
+        }
+        return index;
+    }
+
+    private boolean isValidPort(String port) {
+        if (port == null || !port.matches("[0-9]{1,5}")) {
+            return false;
+        }
+        try {
+            int value = Integer.parseInt(port);
+            return value > 0 && value <= 65535;
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
     }
 
     /**
@@ -426,14 +610,20 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
      * @return 是否为IPv6地址
      */
     private boolean isIPv6Address(String address) {
-        // IPv6地址包含多个冒号，至少2个
+        // IPv6地址包含多个冒号，至少2个；再用 JDK 的字面量解析排除普通字符串。
         if (!address.contains(":")) {
             return false;
         }
-        
-        // 计算冒号数量，IPv6地址至少有2个冒号
+
         long colonCount = address.chars().filter(ch -> ch == ':').count();
-        return colonCount >= 2;
+        if (colonCount < 2) {
+            return false;
+        }
+        try {
+            return InetAddress.getByName(address) instanceof Inet6Address;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     /**

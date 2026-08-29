@@ -32,7 +32,7 @@ public class Inbound implements Serializable {
     /** sing-box inbound tag */
     private String tag;
 
-    /** vless/vmess/trojan/shadowsocks/hysteria2 */
+    /** vless/vmess/trojan/shadowsocks/hysteria2/tuic/anytls */
     private String protocol;
 
     /** sing-box 本机监听口(127.0.0.1) */

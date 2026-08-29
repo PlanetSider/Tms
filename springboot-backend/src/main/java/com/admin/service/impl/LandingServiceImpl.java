@@ -81,7 +81,7 @@ public class LandingServiceImpl extends ServiceImpl<LandingMapper, Landing> impl
         } catch (IllegalArgumentException e) {
             return R.err(e.getMessage());
         }
-        // 协议落地(ss/vless…)暂不在线测,格式已校验即算通过
+        // 协议落地(ss/vless/tuic/anytls…)暂不在线测,格式已校验即算通过
         if (!"socks5".equals(parsed.type)) {
             JSONObject r = new JSONObject();
             r.put("ok", true);

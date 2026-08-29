@@ -33,9 +33,9 @@ interface Node {
   singboxRunning?: boolean;
   /** 该机装没装 sing-box。undefined = 老节点没上报这个字段,提示里两种情况都要提 */
   singboxInstalled?: boolean;
-  /** 正在下载安装 sing-box(刚建完协议那一两分钟)。这时候不该报红 */
+  /** 正在准备 sing-box(刚建完协议那一两分钟)。这时候不该报红 */
   singboxInstalling?: boolean;
-  /** 上次安装失败的原因,有值就直接摆出来,省得上机器翻 journalctl */
+  /** 上次安装失败的原因,有值就直接摆出来,省得上机器翻容器日志 */
   singboxInstallErr?: string;
   portSta: number;
   portEnd: number;
@@ -149,9 +149,21 @@ export default function NodePage() {
       closeWebSocket();
     }
     
-    // 构建WebSocket URL，使用axios的baseURL
-    const baseUrl = axios.defaults.baseURL || (import.meta.env.VITE_API_BASE ? `${import.meta.env.VITE_API_BASE}/api/v1/` : '/api/v1/');
-    const wsUrl = baseUrl.replace(/^http/, 'ws').replace(/\/api\/v1\/$/, '') + `/system-info?type=0&secret=${localStorage.getItem('token')}`;
+    // 构建绝对 WebSocket 地址。生产环境 API 使用相对路径时,必须回到当前页面的
+    // 协议和主机,否则浏览器会拒绝把 /system-info 当作 WebSocket URL。
+    const configuredBaseUrl = axios.defaults.baseURL || (import.meta.env.VITE_API_BASE ? `${import.meta.env.VITE_API_BASE}/api/v1/` : '/api/v1/');
+    const configuredUrl = new URL(configuredBaseUrl, window.location.origin);
+    const websocketProtocol = configuredUrl.protocol === 'https:' || configuredUrl.protocol === 'wss:'
+      ? 'wss:'
+      : configuredUrl.protocol === 'http:' || configuredUrl.protocol === 'ws:'
+        ? 'ws:'
+        : window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const websocketHost = configuredUrl.host || window.location.host;
+    const query = new URLSearchParams({
+      type: '0',
+      secret: localStorage.getItem('token') || ''
+    });
+    const wsUrl = `${websocketProtocol}//${websocketHost}/system-info?${query.toString()}`;
     
     try {
       websocketRef.current = new WebSocket(wsUrl);
@@ -245,6 +257,17 @@ export default function NodePage() {
               singboxRunning: typeof systemInfo.singbox_running === 'boolean'
                 ? systemInfo.singbox_running
                 : node.singboxRunning,
+              singboxInstalled: typeof systemInfo.singbox_installed === 'boolean'
+                ? systemInfo.singbox_installed
+                : node.singboxInstalled,
+              singboxInstalling: typeof systemInfo.singbox_installing === 'boolean'
+                ? systemInfo.singbox_installing
+                : node.singboxInstalling,
+              singboxInstallErr: typeof systemInfo.singbox_install_err === 'string' && systemInfo.singbox_install_err
+                ? systemInfo.singbox_install_err
+                : systemInfo.singbox_installed === true
+                  ? undefined
+                  : node.singboxInstallErr,
               systemInfo: {
                 cpuUsage: parseFloat(systemInfo.cpu_usage) || 0,
                 memoryUsage: parseFloat(systemInfo.memory_usage) || 0,
@@ -510,7 +533,15 @@ export default function NodePage() {
       // 面板地址(网站配置的 ip)没设时,自动用当前访问域名 + 后端默认口 6365 填好再重试,
       // 免得用户手配或手打命令(手打易带 http:// 导致节点离线)
       if (res.code !== 0 && String(res.msg || "").includes("ip")) {
-        await updateConfig("ip", `${window.location.hostname}:6365`);
+        const panelAddress = window.location.protocol === 'https:'
+          ? window.location.host
+          : `${window.location.hostname}:6365`;
+        await updateConfig(
+          "ip",
+          window.location.protocol === 'https:'
+            ? `https://${panelAddress}`
+            : panelAddress
+        );
         res = await getNodeInstallCommand(node.id);
       }
       if (res.code === 0 && res.data) {
@@ -697,14 +728,14 @@ export default function NodePage() {
                 </CardHeader>
 
                 <CardBody className="pt-0 pb-3">
-                  {/* 「在线」只代表 gost 活着。sing-box 是另一个服务,它挂了这里照样绿,
+                  {/* 「在线」只代表 Agent 活着。sing-box 是另一个进程,它挂了这里照样绿,
                       但那台机上的协议全都用不了 —— 必须单独标出来 */}
                   {node.connectionStatus === 'online' && node.singboxRunning === false && (
                     node.singboxInstalling ? (
                       <div className="mb-3 rounded-lg border border-default-300 bg-default-100 px-2.5 py-2">
                         <div className="text-xs font-medium text-default-600">⏳ sing-box 安装中</div>
                         <div className="text-[11px] text-default-500 mt-0.5 leading-relaxed">
-                          首次建协议时会现下约 57MB,一般 1-2 分钟,装好自动恢复。
+                          节点正在准备 sing-box,完成后会自动恢复。
                         </div>
                       </div>
                     ) : (
@@ -715,13 +746,13 @@ export default function NodePage() {
                         <div className="text-[11px] text-default-500 mt-0.5 leading-relaxed">
                           {node.singboxInstallErr ? (
                             <>这台机上的协议全部不可用。节点报的原因:<code className="font-mono break-all">{node.singboxInstallErr}</code>
-                            。多半是下载 GitHub 失败,国内机改用镜像版命令重跑节点安装脚本。</>
+                            。请在节点机执行 Compose 更新命令并查看容器日志。</>
                           ) : node.singboxInstalled === false ? (
-                            <>这台机上的协议全部不可用。<span className="text-danger">sing-box 没装上</span>(装节点时下载 GitHub 失败,
-                            国内机常见)—— 在这台机器上重跑一次节点安装脚本即可。</>
+                            <>这台机上的协议全部不可用。<span className="text-danger">sing-box 没装上</span>，通常是节点镜像没有更新成功。
+                            请在节点机执行 <code className="font-mono">cd /opt/tms-node && docker compose pull && docker compose up -d --force-recreate</code>。</>
                           ) : (
-                            <>这台机上的协议全部不可用。执行 <code className="font-mono">systemctl enable --now sing-box</code> 恢复;
-                            若提示 unit 不存在,说明没装上,重跑节点安装脚本。</>
+                            <>这台机上的协议全部不可用。到节点机执行 <code className="font-mono">cd /opt/tms-node && docker compose up -d</code> 恢复;
+                            仍未恢复时查看 <code className="font-mono">docker compose logs -f node</code>。</>
                           )}
                         </div>
                       </div>
@@ -1178,4 +1209,4 @@ export default function NodePage() {
       </div>
     
   );
-} 
+}

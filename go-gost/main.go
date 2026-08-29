@@ -106,15 +106,30 @@ func init() {
 }
 
 func main() {
-	// 加载配置文件
-	config, err := LoadConfig("config.json")
+	config, err := loadOrCreateAgentConfig()
 	if err != nil {
-		fmt.Println("❌ 配置加载失败: %v\n", err)
-		fmt.Println("请确保当前目录存在 config.json 文件")
+		fmt.Printf("❌ 配置加载失败: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("✅ 配置加载成功 - addr: %s", config.Addr)
+	// parser.Parse 默认只会从工作目录或 /etc/gost 查找 gost.json/gost.yaml。
+	// Docker 使用持久化卷且 Agent 配置路径可通过环境变量覆盖,因此显式
+	// 指定同一份 GOST 配置,避免首次启动空卷时解析到错误的文件。
+	if path, err := ensureGostConfig(); err != nil {
+		fmt.Printf("❌ GOST 配置准备失败: %v\n", err)
+		os.Exit(1)
+	} else {
+		cfgFile = path
+		if isInlineGostConfig(path) {
+			// 内联 JSON 没有文件路径;保存 Agent 命令下发的配置时回退到
+			// Agent 配置所在目录,不能把整段 JSON 传给 os.Create。
+			_ = os.Unsetenv("TMS_GOST_CONFIG")
+		} else {
+			_ = os.Setenv("TMS_GOST_CONFIG", path)
+		}
+	}
+
+	fmt.Printf("✅ 配置加载成功 - addr: %s\n", config.Addr)
 
 	log := xlogger.NewLogger()
 	logger.SetDefault(log)
@@ -122,6 +137,7 @@ func main() {
 	wsReporter := socket.StartWebSocketReporterWithConfig(config.Addr, config.Secret, config.Http, config.Tls, config.Socks, "1.2.4")
 	defer wsReporter.Stop()
 	service.SetHTTPReportURL(config.Addr, config.Secret)
+	service.SetProtocolBlock(config.Http, config.Tls, config.Socks)
 
 	p := &program{}
 	if err := svc.Run(p); err != nil {

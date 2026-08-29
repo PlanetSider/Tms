@@ -92,21 +92,32 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     /**
      * 组装并入库一个入站,但【不推 sing-box 配置】。
-     * 一键添加时批量建、最后统一推一次,避免每建一个就重启 sing-box、反复重启触发 systemd 启动限流。
+     * 一键添加时批量建、最后统一推一次,避免每建一个就重启 sing-box。
      */
     private R buildAndSaveInbound(InboundDto dto) {
         Node node = nodeMapper.selectById(dto.getNodeId());
         if (node == null) {
             return R.err("节点不存在");
         }
-        String protocol = (dto.getProtocol() == null || dto.getProtocol().isEmpty())
-                ? "shadowsocks" : dto.getProtocol().toLowerCase();
+        String protocol = (dto.getProtocol() == null || dto.getProtocol().trim().isEmpty())
+                ? "shadowsocks" : dto.getProtocol().trim().toLowerCase(java.util.Locale.ROOT);
 
         // 通用字段(sing-box 一律 listen 127.0.0.1,公网口交给 gost 限速)
         Inbound in = new Inbound();
+        Integer listenPort = dto.getListenPort() != null ? dto.getListenPort() : allocateListenPort(node.getId());
+        if (listenPort == null || listenPort < 1 || listenPort > 65535) {
+            return R.err("监听端口必须在1-65535范围内");
+        }
+        long duplicatePorts = this.count(new QueryWrapper<Inbound>()
+                .eq("node_id", node.getId())
+                .eq("listen_port", listenPort));
+        if (duplicatePorts > 0) {
+            return R.err("该节点监听端口已被其它协议占用:" + listenPort);
+        }
+
         in.setNodeId(node.getId());
         in.setProtocol(protocol);
-        in.setListenPort(dto.getListenPort() != null ? dto.getListenPort() : allocateListenPort(node.getId()));
+        in.setListenPort(listenPort);
         in.setTag("in-" + node.getId() + "-" + in.getListenPort());
         in.setRemark(dto.getRemark());
         in.setLandingId(dto.getLandingId()); // 空=直连,有=中转(经该落地出网)
@@ -199,9 +210,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         if (node == null) {
             return R.err("节点不存在");
         }
-        // 支持的协议一键全建。SS 用不了,已去掉。
+        // 支持的协议一键全建。SS-2022 使用入站共享密码,通过每用户独立公网端口区分。
         String realitySni = realitySni(sni);
-        String[] protocols = {"vless", "trojan", "vmess", "hysteria2", "tuic", "anytls"};
+        String[] protocols = {"vless", "trojan", "vmess", "shadowsocks", "hysteria2", "tuic", "anytls"};
         List<Object> created = new java.util.ArrayList<>();
         for (String p : protocols) {
             InboundDto dto = new InboundDto();
@@ -210,7 +221,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             if ("vless".equals(p) || "trojan".equals(p)) {
                 dto.setSni(realitySni);
             }
-            R r = buildAndSaveInbound(dto); // 只入库,不推送(否则每个都重启 sing-box,7 次触发 systemd 限流)
+            R r = buildAndSaveInbound(dto); // 只入库,不推送(否则每个都重启 sing-box)
             if (r.getCode() != 0) {
                 return R.err("一键添加中断(" + p + "):" + r.getMsg() + "(已成功 " + created.size() + " 个)");
             }
@@ -241,7 +252,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         Long landingId = ((com.admin.entity.Landing) lr.getData()).getId();
         // 和一键搭协议一样建全套,只是每个入站带上 landing_id → 流量经该落地出网
         String realitySni = realitySni(sni);
-        String[] protocols = {"vless", "trojan", "vmess", "hysteria2", "tuic", "anytls"};
+        String[] protocols = {"vless", "trojan", "vmess", "shadowsocks", "hysteria2", "tuic", "anytls"};
         List<Object> created = new java.util.ArrayList<>();
         for (String p : protocols) {
             InboundDto dto = new InboundDto();
@@ -459,7 +470,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         java.util.Set<Long> affectedNodes = new java.util.HashSet<>();
         java.util.Set<Long> limiterPushedNodes = new java.util.HashSet<>();
         // 本次分配里已确认「机器上被别的程序占了」的端口,按节点分开记。
-        // 一台机 6 个协议逐个分配,不共享的话每个协议都要把同一批被占端口重新踩一遍,
+        // 一台机 7 个协议逐个分配,不共享的话每个协议都要把同一批被占端口重新踩一遍,
         // 而每踩一次就是一个最多 10 秒的节点往返 —— 分配卡死主要卡在这。
         java.util.Map<Long, java.util.Set<Integer>> busyPortsByNode = new java.util.HashMap<>();
         int assigned = 0, skipped = 0, updated = 0;
@@ -739,9 +750,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
             // 名字规则和链接订阅保持一致:聚合订阅带线路前缀,单条不带。
             // 两种订阅里同一个节点应该叫同一个名字,不然车友对不上。
+            String normalizedProtocol = in.getProtocol() == null ? ""
+                    : in.getProtocol().trim().toLowerCase(java.util.Locale.ROOT);
             String remark = (in.getRemark() != null && !in.getRemark().isEmpty())
                     ? in.getRemark()
-                    : protocolDisplayName(in.getProtocol());
+                    : protocolDisplayName(normalizedProtocol);
             if (aggUser != null) {
                 StringBuilder prefix = new StringBuilder(node.getName());
                 if (lid != null) {
@@ -760,16 +773,25 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             String ip = (node.getDomain() != null && !node.getDomain().trim().isEmpty())
                     ? node.getDomain().trim()
                     : node.getServerIp();
+            String protocol = normalizedProtocol;
             String ssMethod = null;
-            if ("shadowsocks".equals(in.getProtocol())) {
-                JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
-                ssMethod = cfg.getString("method");
+            String ssPassword = null;
+            if ("shadowsocks".equals(protocol)) {
+                try {
+                    JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
+                    if (cfg != null) {
+                        ssMethod = cfg.getString("method");
+                        ssPassword = cfg.getString("password");
+                    }
+                } catch (Exception ignored) {
+                    // 历史脏配置不能让整份订阅生成失败,ClashUtil 会跳过该节点。
+                }
             }
             java.util.Map<String, Object> proxy = ClashUtil.toProxy(
-                    in.getProtocol(),
+                    protocol,
                     ClashUtil.uniqueName(remark, usedNames),
                     ip, forward.getInPort(),
-                    iu.getUuid(), iu.getPassword(), in.getSni(),
+                    iu.getUuid(), "shadowsocks".equals(protocol) ? ssPassword : iu.getPassword(), in.getSni(),
                     in.getPublicKey(), in.getShortId(), ssMethod);
             if (proxy != null) {
                 proxies.add(proxy);
@@ -807,7 +829,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     /**
      * 协议在客户端里显示的名字。
      * 没填备注时拿它当节点名 —— 原来兜底用的是 tag(in-1-40001 这种),
-     * 占了十个字符还看不出是什么协议,单条线路订阅里六个节点全长一个样。
+     * 占了十个字符还看不出是什么协议,单条线路订阅里七个节点全长一个样。
      */
     private static String protocolDisplayName(String protocol) {
         if (protocol == null) {
@@ -839,13 +861,22 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 ? node.getDomain().trim()
                 : node.getServerIp();
         Integer port = forward.getInPort();
-        switch (in.getProtocol() == null ? "" : in.getProtocol()) {
+        String protocol = in.getProtocol() == null ? "" : in.getProtocol().trim().toLowerCase(java.util.Locale.ROOT);
+        switch (protocol) {
             case "shadowsocks": {
-                JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
-                return SingboxUtil.buildShadowsocksLink(ip, port, cfg.getString("method"), cfg.getString("password"), remark);
+                try {
+                    JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
+                    return cfg == null ? "" : SingboxUtil.buildShadowsocksLink(
+                            ip, port, cfg.getString("method"), cfg.getString("password"), remark);
+                } catch (Exception ignored) {
+                    return "";
+                }
             }
             case "vmess":
                 return SingboxUtil.buildVmessLink(uuid, ip, port, remark);
+            case "vless":
+                return SingboxUtil.buildVlessRealityLink(
+                        uuid, ip, port, in.getSni(), in.getPublicKey(), in.getShortId(), remark);
             case "trojan":
                 return SingboxUtil.buildTrojanRealityLink(password, ip, port, in.getSni(), in.getPublicKey(), in.getShortId(), remark);
             case "hysteria2":
@@ -854,8 +885,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 return SingboxUtil.buildTuicLink(uuid, password, ip, port, in.getSni(), remark);
             case "anytls":
                 return SingboxUtil.buildAnyTlsLink(password, ip, port, in.getSni(), remark);
-            default: // vless
-                return SingboxUtil.buildVlessRealityLink(uuid, ip, port, in.getSni(), in.getPublicKey(), in.getShortId(), remark);
+            default:
+                return "";
         }
     }
 
@@ -873,7 +904,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         List<InboundUser> ius = inboundUserMapper.selectList(
                 new QueryWrapper<InboundUser>().eq("sub_token", token));
         List<String> links = new java.util.ArrayList<>();
-        // 线路停用状态查一次缓存起来:一条订阅里六个协议同属一条线路,
+        // 线路停用状态查一次缓存起来:一条订阅里七个协议同属一条线路,
         // 挨个去查线路表纯属浪费。
         java.util.Map<String, Boolean> lineStopped = new HashMap<>();
         for (InboundUser iu : ius) {
@@ -1317,7 +1348,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
      *
      * knownBusy:本次分配过程中已经确认「机器上被别的程序占了」的端口。
      * allocateHybridPort 只查得到数据库里的占用,查不到 OS 层的,所以那些端口
-     * 每个协议都会重新踩一遍 —— 一台机 6 个协议就是 6 倍的无效往返。
+     * 每个协议都会重新踩一遍 —— 一台机 7 个协议就是 7 倍的无效往返。
      * 把踩过的坑记下来传给后面的协议,同一个端口只吃一次亏。
      */
     private R createForwardAutoPort(ForwardDto fdto, User user, Long nodeId, java.util.Set<Integer> knownBusy) {

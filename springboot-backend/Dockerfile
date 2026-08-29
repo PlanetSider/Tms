@@ -22,10 +22,19 @@ ENV LANG=en_US.UTF-8
 ENV LANGUAGE=en_US:en
 ENV LC_ALL=en_US.UTF-8
 
-RUN sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list \
-    && sed -i 's/security.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends fontconfig fonts-dejavu \
+RUN set -eux; \
+    for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do \
+        if [ -f "$source_file" ]; then \
+            sed -i \
+                -e 's|archive.ubuntu.com|mirrors.ustc.edu.cn|g' \
+                -e 's|security.ubuntu.com|mirrors.ustc.edu.cn|g' \
+                -e 's|deb.debian.org/debian|mirrors.ustc.edu.cn/debian|g' \
+                -e 's|security.debian.org/debian-security|mirrors.ustc.edu.cn/debian-security|g' \
+                "$source_file"; \
+        fi; \
+    done; \
+    apt-get update \
+    && apt-get install -y --no-install-recommends curl fontconfig fonts-dejavu \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

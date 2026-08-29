@@ -66,7 +66,7 @@ function isTokenExpired(response: ApiResponse) {
 /**
  * 慢接口的超时。
  *
- * 这些接口要跟【节点】来回通信:一台机器 6 个协议,每个协议都要下发 gost 服务、
+ * 这些接口要跟【节点】来回通信:一台机器 7 个协议,每个协议都要下发 gost 服务、
  * 推限速器,而每次节点往返最多等 10 秒(后端 WebSocketServer.send_msg 的设定)。
  * 节点稍微慢一点,累加起来就轻松超过 30 秒 —— 用户看到的就是
  * "一点分配就卡住,过一会儿报 timeout of 30000ms exceeded"。
@@ -170,4 +170,4 @@ const Network = {
   }
 };
 
-export default Network; 
+export default Network;

@@ -244,15 +244,15 @@ export default function InboundPage() {
                 </div>
                 {firstIp && <div className="text-xs text-default-500 font-mono">{firstIp}</div>}
 
-                {/* 节点在线 ≠ 协议可用:gost 和 sing-box 是两个服务,sing-box 挂了
+                {/* 节点在线 ≠ 协议可用:Agent 和 sing-box 是两个进程,sing-box 挂了
                     这里照样显示「在线」,但这台机上所有协议全都连不上。必须单独标出来 —— 
                     不然只会以为是协议参数配错了,往那个方向查很久都查不出来 */}
                 {online && n.singboxRunning === false && nodeInbounds.length > 0 && (
                   n.singboxInstalling ? (
                     <div className="rounded-lg border border-default-300 bg-default-100 px-3 py-2 space-y-1">
-                      <div className="text-sm font-medium text-default-600">⏳ sing-box 正在安装,请稍候…</div>
+                      <div className="text-sm font-medium text-default-600">⏳ 节点正在准备 sing-box,请稍候…</div>
                       <div className="text-xs text-default-500">
-                        首次建协议时会现下 sing-box(约 57MB),一般 1-2 分钟。装好后这里自动恢复正常,不用管。
+                        节点准备完成后这里会自动恢复正常,通常不需要手动处理。
                       </div>
                     </div>
                   ) : n.singboxInstallErr ? (
@@ -262,7 +262,7 @@ export default function InboundPage() {
                         节点报的原因:<code className="font-mono">{n.singboxInstallErr}</code>
                       </div>
                       <div className="text-xs text-default-500">
-                        多半是这台机下载 GitHub 失败。国内机器改用镜像版命令重跑节点安装脚本(见 README)。
+                        多半是节点镜像拉取或网络失败。到节点机执行 Compose 安装命令并查看容器日志(见 README)。
                       </div>
                     </div>
                   ) : (
@@ -270,17 +270,16 @@ export default function InboundPage() {
                       <div className="text-sm font-semibold text-danger">⚠️ sing-box 未运行,这台机的协议全部不可用</div>
                       {n.singboxInstalled === false ? (
                         <div className="text-xs text-default-500">
-                          这台机上<span className="text-danger font-medium">根本没装 sing-box</span> —— 装节点时从 GitHub
-                          下载失败了(国内机常见)。到这台机上重跑一次节点安装脚本即可,装好后面板会自动把协议配置推下去,
+                          这台机上<span className="text-danger font-medium">根本没装 sing-box</span>，通常是节点镜像没有更新成功或
+                          节点容器没有正确启动。到这台机上执行 Compose 安装命令即可，容器恢复后面板会自动把协议配置推下去，
                           不用重新分配。
                         </div>
                       ) : (
                         <div className="text-xs text-default-500">
-                          节点本身在线(gost 正常),但跑协议的 sing-box 没起来。到这台机上执行:
-                          <code className="font-mono bg-default-200 px-1 rounded ml-1">systemctl enable --now sing-box</code>
+                          节点本身在线(Agent 正常),但跑协议的 sing-box 没起来。到这台机上执行:
+                          <code className="font-mono bg-default-200 px-1 rounded ml-1">cd /opt/tms-node && docker compose up -d</code>
                           <div className="mt-1">
-                            若报 <code className="font-mono">Unit file sing-box.service does not exist</code>,说明根本没装上
-                            (下载 GitHub 失败),重跑一次节点安装脚本即可。
+                            仍未恢复时执行 <code className="font-mono">docker compose logs -f node</code> 查看具体原因。
                           </div>
                         </div>
                       )}
@@ -420,7 +419,7 @@ export default function InboundPage() {
           <ModalHeader>⚡ 一键搭建整机协议</ModalHeader>
           <ModalBody className="space-y-3">
             <div className="text-sm text-default-500">
-              在选中的机器上一键建好全部协议:<b>VLESS-Reality、Trojan-Reality、VMess、Hysteria2、TUIC、AnyTLS</b>(端口、密钥、自签证书全自动;端口被占自动上移)。建好后就是一张机器卡,点「分配用户」出订阅即可。
+            在选中的机器上一键建好全部协议:<b>VLESS-Reality、Trojan-Reality、VMess、Shadowsocks-2022、Hysteria2、TUIC、AnyTLS</b>(端口、密钥、自签证书全自动;端口被占自动上移)。建好后就是一张机器卡,点「分配用户」出订阅即可。
             </div>
             <Select
               label="机器"
@@ -474,6 +473,7 @@ export default function InboundPage() {
               <SelectItem key="vless">VLESS-Reality(无域名,推荐)</SelectItem>
               <SelectItem key="trojan">Trojan-Reality(无域名)</SelectItem>
               <SelectItem key="vmess">VMess(无域名,兼容老客户端)</SelectItem>
+              <SelectItem key="shadowsocks">Shadowsocks-2022(无 TLS,稳)</SelectItem>
               <SelectItem key="hysteria2">Hysteria2(QUIC,快,自签证书)</SelectItem>
               <SelectItem key="tuic">TUIC(QUIC,自签证书)</SelectItem>
               <SelectItem key="anytls">AnyTLS(自签证书)</SelectItem>

@@ -19,7 +19,7 @@ get_architecture() {
 # 构建下载地址
 build_download_url() {
     local ARCH=$(get_architecture)
-    echo "https://github.com/Teminuosi/Tms/releases/latest/download/gost-${ARCH}"
+    echo "https://github.com/PlanetSider/Tms/releases/latest/download/gost-${ARCH}"
 }
 
 INSTALL_DIR="/etc/gost"
@@ -118,6 +118,47 @@ check_and_install_tcpkill() {
   return 0
 }
 
+# Agent 现在直接托管 sing-box。升级旧版裸机节点时,先停止旧的 systemd
+# sing-box,否则它会继续占用协议端口,让新 Agent 反复启动失败。
+migrate_legacy_singbox_service() {
+  local unit_path enabled_state was_active
+  unit_path="$(systemctl show -p FragmentPath --value sing-box 2>/dev/null || true)"
+  enabled_state="$(systemctl is-enabled sing-box 2>/dev/null || true)"
+  was_active=0
+  if systemctl is-active --quiet sing-box 2>/dev/null; then
+    was_active=1
+  fi
+
+  if [[ -z "$unit_path" && "$enabled_state" != "enabled" && "$enabled_state" != "enabled-runtime" && "$was_active" != "1" \
+    && ! -f "/etc/systemd/system/sing-box.service" ]]; then
+    return 0
+  fi
+
+  if [[ "$was_active" == "1" ]]; then
+    echo "🔍 检测到旧版 sing-box systemd 服务,停止并交给 Agent 接管"
+    systemctl stop sing-box 2>/dev/null || true
+  fi
+  systemctl disable sing-box 2>/dev/null || true
+
+  # 只要旧服务原本在运行或处于 enabled 状态,Agent 启动时就恢复已有配置。
+  if [[ "$was_active" == "1" || "$enabled_state" == "enabled" || "$enabled_state" == "enabled-runtime" ]]; then
+    rm -f "$INSTALL_DIR/sing-box.disabled"
+    printf 'enabled\n' > "$INSTALL_DIR/sing-box.enabled"
+    chmod 600 "$INSTALL_DIR/sing-box.enabled"
+  elif [[ -f "$INSTALL_DIR/sing-box.json" ]]; then
+    rm -f "$INSTALL_DIR/sing-box.enabled"
+    printf 'disabled\n' > "$INSTALL_DIR/sing-box.disabled"
+    chmod 600 "$INSTALL_DIR/sing-box.disabled"
+  fi
+
+  # 只删除本机覆盖的 unit,不删除发行版包提供的 /usr/lib unit。
+  if [[ "$unit_path" == "/etc/systemd/system/"* ]]; then
+    rm -f "$unit_path"
+  fi
+  rm -rf /etc/systemd/system/sing-box.service.d 2>/dev/null || true
+  systemctl daemon-reload
+}
+
 
 # 获取用户输入的配置参数
 get_config_params() {
@@ -137,6 +178,35 @@ get_config_params() {
       exit 1
     fi
   fi
+}
+
+# 将配置值编码为 JSON 字符串内容,不依赖 jq 等额外命令。
+# 逐字节处理可同时保留 IPv6/中文等非 ASCII 输入,并转义 JSON 不允许的控制字符。
+json_escape() {
+  local value="$1"
+  local char code i
+  local LC_ALL=C
+
+  for ((i = 0; i < ${#value}; i++)); do
+    char="${value:i:1}"
+    case "$char" in
+      '"') printf '\\\"' ;;
+      '\') printf '\\\\' ;;
+      $'\b') printf '\\b' ;;
+      $'\f') printf '\\f' ;;
+      $'\n') printf '\\n' ;;
+      $'\r') printf '\\r' ;;
+      $'\t') printf '\\t' ;;
+      *)
+        printf -v code '%d' "'$char"
+        if ((code < 0x20)); then
+          printf '\\u%04x' "$code"
+        else
+          printf '%s' "$char"
+        fi
+        ;;
+    esac
+  done
 }
 
 # 解析命令行参数
@@ -172,36 +242,42 @@ install_gost() {
 
   mkdir -p "$INSTALL_DIR"
 
-  # 停止并禁用已有服务
+  # 下载 gost
+  echo "⬇️ 下载 gost 中..."
+  curl -fL --retry 3 --connect-timeout 15 "$DOWNLOAD_URL" -o "$INSTALL_DIR/gost.new"
+  if [[ ! -f "$INSTALL_DIR/gost.new" || ! -s "$INSTALL_DIR/gost.new" ]]; then
+    rm -f "$INSTALL_DIR/gost.new"
+    echo "❌ 下载失败，请检查网络或下载链接。"
+    exit 1
+  fi
+  chmod +x "$INSTALL_DIR/gost.new"
+  echo "✅ 下载完成"
+
+  # 下载成功后再停止已有服务并切换二进制;失败时旧服务和旧文件都还在。
   if systemctl list-units --full -all | grep -Fq "gost.service"; then
     echo "🔍 检测到已存在的gost服务"
     systemctl stop gost 2>/dev/null && echo "🛑 停止服务"
     systemctl disable gost 2>/dev/null && echo "🚫 禁用自启"
   fi
+  mv -f "$INSTALL_DIR/gost.new" "$INSTALL_DIR/gost"
 
-  # 删除旧文件
-  [[ -f "$INSTALL_DIR/gost" ]] && echo "🧹 删除旧文件 gost" && rm -f "$INSTALL_DIR/gost"
-
-  # 下载 gost
-  echo "⬇️ 下载 gost 中..."
-  curl -L "$DOWNLOAD_URL" -o "$INSTALL_DIR/gost"
-  if [[ ! -f "$INSTALL_DIR/gost" || ! -s "$INSTALL_DIR/gost" ]]; then
-    echo "❌ 下载失败，请检查网络或下载链接。"
-    exit 1
-  fi
-  chmod +x "$INSTALL_DIR/gost"
-  echo "✅ 下载完成"
+  # 兼容从旧版 systemd 节点升级到 Agent 直管 sing-box。
+  # 放在下载成功之后,避免网络失败时把仍可用的旧 sing-box 提前停掉。
+  migrate_legacy_singbox_service
 
   # 打印版本
   echo "🔎 gost 版本：$($INSTALL_DIR/gost -V)"
 
   # 写入 config.json (安装时总是创建新的)
   CONFIG_FILE="$INSTALL_DIR/config.json"
+  local escaped_server_addr escaped_secret
+  escaped_server_addr="$(json_escape "$SERVER_ADDR")"
+  escaped_secret="$(json_escape "$SECRET")"
   echo "📄 创建新配置: config.json"
   cat > "$CONFIG_FILE" <<EOF
 {
-  "addr": "$SERVER_ADDR",
-  "secret": "$SECRET"
+  "addr": "$escaped_server_addr",
+  "secret": "$escaped_secret"
 }
 EOF
 
@@ -268,7 +344,7 @@ update_gost() {
   
   # 先下载新版本
   echo "⬇️ 下载最新版本..."
-  curl -L "$DOWNLOAD_URL" -o "$INSTALL_DIR/gost.new"
+  curl -fL --retry 3 --connect-timeout 15 "$DOWNLOAD_URL" -o "$INSTALL_DIR/gost.new"
   if [[ ! -f "$INSTALL_DIR/gost.new" || ! -s "$INSTALL_DIR/gost.new" ]]; then
     echo "❌ 下载失败。"
     return 1
@@ -279,6 +355,9 @@ update_gost() {
     echo "🛑 停止 gost 服务..."
     systemctl stop gost
   fi
+
+  # 旧版节点可能还有独立的 sing-box.service,必须在新 Agent 启动前释放端口。
+  migrate_legacy_singbox_service
 
   # 替换文件
   mv "$INSTALL_DIR/gost.new" "$INSTALL_DIR/gost"

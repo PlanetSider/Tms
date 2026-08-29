@@ -36,7 +36,7 @@ public class Node extends BaseEntity {
 
     /**
      * 该节点上 sing-box 是否在运行(不入库,查询时从节点上报的实时状态填入)。
-     * gost 和 sing-box 是两个独立服务:sing-box 挂了 gost 照样在线,
+     * Agent 和 sing-box 是两个独立进程:sing-box 挂了 Agent 照样在线,
      * 面板不单独标出来的话,表现就是「节点显示在线但所有协议都连不上」。
      * null = 节点还没上报过(老版本节点或刚连上)。
      */
@@ -45,18 +45,17 @@ public class Node extends BaseEntity {
 
     /**
      * 这台机装没装 sing-box。null = 节点版本较老、没上报过这个字段。
-     * 区分它是因为「没装」和「装了没跑」的修法完全不同:前者要重跑安装脚本
-     * (国内机常见于下载 GitHub 失败),后者 systemctl enable --now 就行,
-     * 而对没装的机器执行后者只会得到 "Unit file does not exist"。
+     * 区分它是因为「没装」和「装了没跑」的修法不同:前者需要重新拉取节点镜像,
+     * 后者需要重新创建节点 Compose 容器。
      */
     @com.baomidou.mybatisplus.annotation.TableField(exist = false)
     private Boolean singboxInstalled;
 
-    /** sing-box 正在下载安装中。刚建完协议的那一两分钟就是这个状态,界面上该显示等待而不是报错 */
+    /** sing-box 正在准备中。刚建完协议的那一两分钟就是这个状态,界面上该显示等待而不是报错 */
     @com.baomidou.mybatisplus.annotation.TableField(exist = false)
     private Boolean singboxInstalling;
 
-    /** 上次安装失败的原因(节点上报)。有值时直接显示给车主,省得上机器翻 journalctl */
+    /** 上次安装失败的原因(节点上报)。有值时直接显示给车主,省得上机器翻容器日志 */
     @com.baomidou.mybatisplus.annotation.TableField(exist = false)
     private String singboxInstallErr;
 

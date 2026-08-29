@@ -5,10 +5,12 @@ import org.yaml.snakeyaml.Yaml;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -35,16 +37,20 @@ public class ClashUtil {
     public static Map<String, Object> toProxy(String protocol, String name, String server, Integer port,
                                               String uuid, String password, String sni,
                                               String publicKey, String shortId, String ssMethod) {
-        if (protocol == null || server == null || port == null) {
+        if (protocol == null || !validServerHost(server) || !validPort(port)) {
             return null;
         }
+        protocol = protocol.trim().toLowerCase(Locale.ROOT);
         Map<String, Object> p = new LinkedHashMap<>();
         p.put("name", name);
-        p.put("server", server);
+        p.put("server", server.trim().replaceAll("^\\[|\\]$", ""));
         p.put("port", port);
 
         switch (protocol) {
             case "vless": {
+                if (isBlank(uuid) || !validServerName(sni) || !validRealityKey(publicKey) || !validRealityShortId(shortId)) {
+                    return null;
+                }
                 p.put("type", "vless");
                 p.put("uuid", uuid);
                 p.put("network", "tcp");
@@ -58,9 +64,13 @@ public class ClashUtil {
                 return p;
             }
             case "trojan": {
+                if (isBlank(password) || !validServerName(sni) || !validRealityKey(publicKey) || !validRealityShortId(shortId)) {
+                    return null;
+                }
                 p.put("type", "trojan");
                 p.put("password", password);
                 p.put("udp", true);
+                p.put("tls", true);
                 // Trojan 这边 SNI 的字段名是 sni,不是 vless 的 servername
                 p.put("sni", nz(sni));
                 p.put("client-fingerprint", "chrome");
@@ -68,6 +78,9 @@ public class ClashUtil {
                 return p;
             }
             case "vmess": {
+                if (isBlank(uuid)) {
+                    return null;
+                }
                 p.put("type", "vmess");
                 p.put("uuid", uuid);
                 // 和 buildVmessLink 里的 aid=0 / scy=auto / net=tcp / tls 空 一致:
@@ -79,13 +92,20 @@ public class ClashUtil {
                 return p;
             }
             case "shadowsocks": {
+                String normalizedMethod = normalizeShadowsocksMethod(ssMethod);
+                if (!validShadowsocksPassword(normalizedMethod, password)) {
+                    return null;
+                }
                 p.put("type", "ss");
-                p.put("cipher", nz(ssMethod));
-                p.put("password", password);
+                p.put("cipher", normalizedMethod);
+                p.put("password", password.trim());
                 p.put("udp", true);
                 return p;
             }
             case "hysteria2": {
+                if (isBlank(password)) {
+                    return null;
+                }
                 p.put("type", "hysteria2");
                 p.put("password", password);
                 p.put("sni", nz(sni));
@@ -93,6 +113,9 @@ public class ClashUtil {
                 return p;
             }
             case "tuic": {
+                if (isBlank(uuid) || isBlank(password)) {
+                    return null;
+                }
                 p.put("type", "tuic");
                 p.put("uuid", uuid);
                 p.put("password", password);
@@ -122,6 +145,91 @@ public class ClashUtil {
 
     private static String nz(String s) {
         return s == null ? "" : s;
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.trim().isEmpty();
+    }
+
+    private static boolean validPort(Integer port) {
+        return port != null && port >= 1 && port <= 65535;
+    }
+
+    private static boolean validRealityShortId(String value) {
+        return value != null && value.trim().matches("(?:[0-9a-fA-F]{2}){1,8}");
+    }
+
+    private static boolean validRealityKey(String value) {
+        return value != null && value.trim().matches("[A-Za-z0-9_-]{20,128}");
+    }
+
+    private static boolean validServerName(String value) {
+        return value != null && value.trim().length() <= 253
+                && value.trim().matches("[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+");
+    }
+
+    private static boolean validServerHost(String value) {
+        if (isBlank(value)) return false;
+        String host = value.trim();
+        if (host.startsWith("[") && host.endsWith("]")) host = host.substring(1, host.length() - 1);
+        if (host.indexOf('/') >= 0 || host.indexOf('?') >= 0 || host.indexOf('#') >= 0 || host.indexOf('@') >= 0) return false;
+        if (host.indexOf(':') >= 0) {
+            try { return java.net.InetAddress.getByName(host) instanceof java.net.Inet6Address; }
+            catch (Exception e) { return false; }
+        }
+        if (host.matches("[0-9.]+")) {
+            String[] parts = host.split("\\.", -1);
+            if (parts.length != 4) return false;
+            for (String part : parts) {
+                try { if (part.isEmpty() || Integer.parseInt(part) > 255) return false; }
+                catch (NumberFormatException e) { return false; }
+            }
+            return true;
+        }
+        return host.matches("[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*");
+    }
+
+    private static boolean validShadowsocksMethod(String method) {
+        String normalized = normalizeShadowsocksMethod(method);
+        if (normalized == null) {
+            return false;
+        }
+        return "2022-blake3-aes-128-gcm".equals(normalized)
+                || "2022-blake3-aes-256-gcm".equals(normalized)
+                || "2022-blake3-chacha20-poly1305".equals(normalized);
+    }
+
+    private static boolean validShadowsocksPassword(String method, String password) {
+        if (!validShadowsocksMethod(method) || isBlank(password)) {
+            return false;
+        }
+        try {
+            int expected = normalizeShadowsocksMethod(method).contains("aes-128") ? 16 : 32;
+            return decodeBase64(password).length == expected;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    /** 同时兼容标准及 URL-safe Base64（分享链接可能省略 padding）。 */
+    private static byte[] decodeBase64(String value) {
+        String normalized = value == null ? "" : value.trim();
+        try {
+            return Base64.getDecoder().decode(normalized);
+        } catch (IllegalArgumentException standardError) {
+            try {
+                return Base64.getUrlDecoder().decode(normalized);
+            } catch (IllegalArgumentException urlError) {
+                throw standardError;
+            }
+        }
+    }
+
+    private static String normalizeShadowsocksMethod(String method) {
+        if (isBlank(method)) {
+            return null;
+        }
+        return method.trim().toLowerCase(Locale.ROOT);
     }
 
     /**

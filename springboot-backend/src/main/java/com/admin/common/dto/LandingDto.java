@@ -5,7 +5,7 @@ import lombok.Data;
 import javax.validation.constraints.NotBlank;
 
 /**
- * 新建落地:名称 + 一条分享链接(socks5/ss/vmess/vless/trojan/hysteria2)。
+ * 新建落地:名称 + 一条分享链接(socks5/ss/vmess/vless/trojan/hysteria2/tuic/anytls)。
  */
 @Data
 public class LandingDto {

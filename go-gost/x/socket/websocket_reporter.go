@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"os/exec"
+	"os"
 	"strconv"
 	"strings"
 	"sync" // 新增：用于管理连接状态的互斥锁
@@ -22,8 +22,6 @@ import (
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 	psnet "github.com/shirou/gopsutil/v3/net"
-	"os"
-	"path/filepath"
 )
 
 // SystemInfo 系统信息结构体
@@ -34,24 +32,21 @@ type SystemInfo struct {
 	CPUUsage         float64 `json:"cpu_usage"`         // CPU使用率（百分比）
 	MemoryUsage      float64 `json:"memory_usage"`      // 内存使用率（百分比）
 
-	// SingboxRunning 报的是【本机 sing-box 服务是否在运行】。
-	// gost 和 sing-box 是两个独立服务:sing-box 挂了/被停了,gost 照样活着、
+	// SingboxRunning 报的是【本机 sing-box 进程是否在运行】。
+	// Agent 和 sing-box 是两个独立进程:sing-box 挂了/被停了,Agent 照样活着、
 	// 节点在面板里依然显示「在线」,但那台机上所有协议其实全都不可用 ——
 	// 排查时极难联想到,所以必须单独报出来让面板能识别。
 	// 该机没搭协议时 sing-box 本来就不该跑,是否异常由面板结合有无入站来判断。
 	SingboxRunning bool `json:"singbox_running"`
 
 	// SingboxInstalling / SingboxInstallErr 覆盖「正在装」和「装失败了为什么」。
-	// 没有这两个的话,刚建完协议的那一两分钟(sing-box 正在下 57MB 二进制)
-	// 面板只会显示血红的「协议全部不可用」,新用户第一眼就以为装坏了。
+	// 兼容旧版节点首次准备二进制的短暂阶段；Compose 镜像默认已内置 sing-box。
 	SingboxInstalling bool   `json:"singbox_installing"`
 	SingboxInstallErr string `json:"singbox_install_err,omitempty"`
 
 	// SingboxInstalled 区分「压根没装」和「装了但没跑」。
-	// 只报 running 的话,面板只能给一句 systemctl enable --now sing-box,
-	// 而没装的机器执行它会得到 "Unit file sing-box.service does not exist" ——
-	// 提示把人引到了死路上。国内机装的时候从 GitHub 下 sing-box 失败很常见,
-	// 这条正是为那种情况准备的。
+	// 只报 running 的话,面板无法区分镜像未更新、容器未重建和进程异常退出,
+	// 这条状态让面板可以给出对应的 Compose 排查提示。
 	SingboxInstalled bool `json:"singbox_installed"`
 }
 
@@ -158,8 +153,13 @@ func (w *WebSocketReporter) Start() {
 // Stop 停止WebSocket报告器
 func (w *WebSocketReporter) Stop() {
 	w.cancel()
-	if w.conn != nil {
-		w.conn.Close()
+	w.connMutex.Lock()
+	conn := w.conn
+	w.conn = nil
+	w.connected = false
+	w.connMutex.Unlock()
+	if conn != nil {
+		conn.Close()
 	}
 
 }
@@ -189,7 +189,7 @@ func (w *WebSocketReporter) run() {
 			}
 
 			// 连接成功，开始发送消息
-			if w.connected {
+			if w.isConnected() {
 				w.handleConnection()
 			} else {
 				// 如果连接失败，等待重试
@@ -207,20 +207,21 @@ func (w *WebSocketReporter) run() {
 // connect 建立WebSocket连接
 func (w *WebSocketReporter) connect() error {
 	w.connMutex.Lock()
-	defer w.connMutex.Unlock()
-
 	// 如果已经在连接中或已连接，直接返回
 	if w.connecting || w.connected {
+		w.connMutex.Unlock()
 		return nil
 	}
-
 	// 设置连接中状态
 	w.connecting = true
+	w.connMutex.Unlock()
 	defer func() {
+		w.connMutex.Lock()
 		w.connecting = false
+		w.connMutex.Unlock()
 	}()
 
-	// 重新读取 config.json 获取最新的协议配置
+	// 重新读取 Agent 配置获取最新的协议配置
 	type LocalConfig struct {
 		Addr   string `json:"addr"`
 		Secret string `json:"secret"`
@@ -230,18 +231,21 @@ func (w *WebSocketReporter) connect() error {
 	}
 
 	var cfg LocalConfig
-	if b, err := os.ReadFile("config.json"); err == nil {
+	if b, err := os.ReadFile(agentConfigPath()); err == nil {
 		json.Unmarshal(b, &cfg)
 	}
 
-	// 使用最新的配置重新构建 URL
-	currentURL := "ws://" + w.addr + "/system-info?type=1&secret=" + w.secret + "&version=" + w.version +
-		"&http=" + strconv.Itoa(cfg.Http) + "&tls=" + strconv.Itoa(cfg.Tls) + "&socks=" + strconv.Itoa(cfg.Socks)
-
-	u, err := url.Parse(currentURL)
-	if err != nil {
-		return fmt.Errorf("解析URL失败: %v", err)
-	}
+	// 使用结构化 URL 构建查询参数,避免 secret/version 中的特殊字符破坏 URL。
+	panelScheme, panelHost := normalizePanelAddress(w.addr)
+	u := url.URL{Scheme: panelScheme, Host: panelHost, Path: "/system-info"}
+	query := u.Query()
+	query.Set("type", "1")
+	query.Set("secret", w.secret)
+	query.Set("version", w.version)
+	query.Set("http", strconv.Itoa(cfg.Http))
+	query.Set("tls", strconv.Itoa(cfg.Tls))
+	query.Set("socks", strconv.Itoa(cfg.Socks))
+	u.RawQuery = query.Encode()
 
 	dialer := websocket.DefaultDialer
 	dialer.HandshakeTimeout = 10 * time.Second
@@ -250,23 +254,37 @@ func (w *WebSocketReporter) connect() error {
 	if err != nil {
 		return fmt.Errorf("连接WebSocket失败: %v", err)
 	}
-
-	// 如果在连接过程中已经有连接了，关闭新连接
-	if w.conn != nil && w.connected {
-		conn.Close()
-		return nil
+	if err := w.ctx.Err(); err != nil {
+		_ = conn.Close()
+		return err
 	}
 
-	w.conn = conn
-	w.connected = true
-
-	// 设置关闭处理器来检测连接状态
-	w.conn.SetCloseHandler(func(code int, text string) error {
-		w.connMutex.Lock()
-		w.connected = false
-		w.connMutex.Unlock()
+	// 安装关闭回调后再交给状态机,这样无论连接何时失效都只会清理自己。
+	conn.SetCloseHandler(func(code int, text string) error {
+		w.markConnectionClosed(conn)
 		return nil
 	})
+
+	var oldConn *websocket.Conn
+	w.connMutex.Lock()
+	if w.ctx.Err() != nil {
+		w.connMutex.Unlock()
+		_ = conn.Close()
+		return w.ctx.Err()
+	}
+	// 已有健康连接时保留它;若旧连接已经失效但尚未完成清理,替换后在锁外关闭旧连接。
+	if w.conn != nil && w.connected {
+		w.connMutex.Unlock()
+		_ = conn.Close()
+		return nil
+	}
+	oldConn = w.conn
+	w.conn = conn
+	w.connected = true
+	w.connMutex.Unlock()
+	if oldConn != nil {
+		_ = oldConn.Close()
+	}
 
 	fmt.Printf("✅ WebSocket连接建立成功 (http=%d, tls=%d, socks=%d)\n", cfg.Http, cfg.Tls, cfg.Socks)
 	return nil
@@ -274,19 +292,30 @@ func (w *WebSocketReporter) connect() error {
 
 // handleConnection 处理WebSocket连接
 func (w *WebSocketReporter) handleConnection() {
+	w.connMutex.Lock()
+	conn := w.conn
+	connected := w.connected
+	w.connMutex.Unlock()
+	if conn == nil || !connected {
+		return
+	}
+
 	defer func() {
 		w.connMutex.Lock()
-		if w.conn != nil {
-			w.conn.Close()
+		isCurrent := w.conn == conn
+		if isCurrent {
+			w.connected = false
 			w.conn = nil
 		}
-		w.connected = false
 		w.connMutex.Unlock()
+		if isCurrent {
+			_ = conn.Close()
+		}
 		fmt.Printf("🔌 WebSocket连接已关闭\n")
 	}()
 
 	// 启动消息接收goroutine
-	go w.receiveMessages()
+	go w.receiveMessages(conn)
 
 	// 主发送循环
 	ticker := time.NewTicker(w.pingInterval)
@@ -299,7 +328,7 @@ func (w *WebSocketReporter) handleConnection() {
 		case <-ticker.C:
 			// 检查连接状态
 			w.connMutex.Lock()
-			isConnected := w.connected
+			isConnected := w.conn == conn && w.connected
 			w.connMutex.Unlock()
 
 			if !isConnected {
@@ -308,12 +337,19 @@ func (w *WebSocketReporter) handleConnection() {
 
 			// 获取系统信息并发送
 			sysInfo := w.collectSystemInfo()
-			if err := w.sendSystemInfo(sysInfo); err != nil {
+			if err := w.sendSystemInfo(conn, sysInfo); err != nil {
 				fmt.Printf("❌ 发送系统信息失败: %v，准备重连\n", err)
 				return
 			}
 		}
 	}
+}
+
+// isConnected 读取连接状态时统一经过锁,避免重连和关闭回调并发读写。
+func (w *WebSocketReporter) isConnected() bool {
+	w.connMutex.Lock()
+	defer w.connMutex.Unlock()
+	return w.connected
 }
 
 // collectSystemInfo 收集系统信息
@@ -345,41 +381,26 @@ func singboxLastInstallErr() string {
 	return err
 }
 
-// isSingboxInstalled 判断这台机上到底装没装 sing-box。
-//
-// 服务文件和二进制哪个在都算装过 —— 只查服务文件的话,二进制下载成功但
-// 写 unit 失败的半吊子状态会被报成「没装」,而那种情况重跑安装脚本确实能修,
-// 结论一样;反过来只查二进制则会漏掉 unit 被手工删掉的机器。
+// isSingboxInstalled 判断实际 sing-box 二进制是否存在。
 func isSingboxInstalled() bool {
-	for _, p := range []string{
-		"/etc/systemd/system/sing-box.service",
-		filepath.Join(installDir, "sing-box"),
-	} {
-		if _, err := os.Stat(p); err == nil {
-			return true
-		}
-	}
-	return false
+	fi, err := os.Stat(singboxExecPath())
+	return err == nil && fi.Mode().IsRegular() && fi.Size() > 0
 }
 
-// isSingboxRunning 判断 sing-box 服务是否在运行。
-// 用 systemctl is-active,输出恰好是 "active" 才算跑着;
-// 没装 systemd 或没这个服务时命令会失败,一律当作没运行。
+// isSingboxRunning 判断由 Agent 直接管理的 sing-box 子进程是否在运行。
 func isSingboxRunning() bool {
-	out, err := exec.Command("systemctl", "is-active", "sing-box").Output()
-	if err != nil {
-		// is-active 对非 active 状态会返回非零退出码,这里不区分,统一视为未运行
-		return strings.TrimSpace(string(out)) == "active"
-	}
-	return strings.TrimSpace(string(out)) == "active"
+	singboxProcessMu.Lock()
+	defer singboxProcessMu.Unlock()
+	// Wait() 完成后会在同一把锁下清空进程指针,避免并发读取 ProcessState。
+	return singboxProcess != nil
 }
 
 // sendSystemInfo 发送系统信息
-func (w *WebSocketReporter) sendSystemInfo(sysInfo SystemInfo) error {
+func (w *WebSocketReporter) sendSystemInfo(conn *websocket.Conn, sysInfo SystemInfo) error {
 	w.connMutex.Lock()
 	defer w.connMutex.Unlock()
 
-	if w.conn == nil || !w.connected {
+	if conn == nil || w.conn != conn || !w.connected {
 		return fmt.Errorf("连接未建立")
 	}
 
@@ -415,10 +436,14 @@ func (w *WebSocketReporter) sendSystemInfo(sysInfo SystemInfo) error {
 	}
 
 	// 设置写入超时
-	w.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 
-	if err := w.conn.WriteMessage(websocket.TextMessage, messageData); err != nil {
-		w.connected = false // 标记连接已断开
+	if err := conn.WriteMessage(websocket.TextMessage, messageData); err != nil {
+		// 只更新仍然是当前连接的状态。旧连接的发送回调可能在重连后才返回,
+		// 不能把新连接一并标记为断开。
+		if w.conn == conn {
+			w.connected = false
+		}
 		return fmt.Errorf("写入消息失败: %v", err)
 	}
 
@@ -426,18 +451,17 @@ func (w *WebSocketReporter) sendSystemInfo(sysInfo SystemInfo) error {
 }
 
 // receiveMessages 接收服务端发送的消息
-func (w *WebSocketReporter) receiveMessages() {
+func (w *WebSocketReporter) receiveMessages(conn *websocket.Conn) {
 	for {
 		select {
 		case <-w.ctx.Done():
 			return
 		default:
 			w.connMutex.Lock()
-			conn := w.conn
-			connected := w.connected
+			connected := w.conn == conn && w.connected
 			w.connMutex.Unlock()
 
-			if conn == nil || !connected {
+			if !connected {
 				return
 			}
 
@@ -449,20 +473,28 @@ func (w *WebSocketReporter) receiveMessages() {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					fmt.Printf("❌ WebSocket读取消息错误: %v\n", err)
 				}
-				w.connMutex.Lock()
-				w.connected = false
-				w.connMutex.Unlock()
+				w.markConnectionClosed(conn)
 				return
 			}
 
 			// 处理接收到的消息
-			w.handleReceivedMessage(messageType, message)
+			w.handleReceivedMessage(conn, messageType, message)
 		}
 	}
 }
 
+// markConnectionClosed 只更新仍然是当前连接的状态。
+// 旧连接的 ReadMessage/CloseHandler 可能在新连接建立后才返回,不能清掉新连接。
+func (w *WebSocketReporter) markConnectionClosed(conn *websocket.Conn) {
+	w.connMutex.Lock()
+	if w.conn == conn {
+		w.connected = false
+	}
+	w.connMutex.Unlock()
+}
+
 // handleReceivedMessage 处理接收到的消息
-func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byte) {
+func (w *WebSocketReporter) handleReceivedMessage(conn *websocket.Conn, messageType int, message []byte) {
 	switch messageType {
 	case websocket.TextMessage:
 		// 先检查是否是加密消息
@@ -479,13 +511,13 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 				decryptedData, err := w.aesCrypto.Decrypt(encryptedWrapper.Data)
 				if err != nil {
 					fmt.Printf("❌ 解密失败: %v\n", err)
-					w.sendErrorResponse("DecryptError", fmt.Sprintf("解密失败: %v", err))
+					w.sendErrorResponse(conn, "DecryptError", fmt.Sprintf("解密失败: %v", err))
 					return
 				}
 				message = decryptedData
 			} else {
 				fmt.Printf("❌ 收到加密消息但没有加密器\n")
-				w.sendErrorResponse("NoDecryptor", "没有可用的解密器")
+				w.sendErrorResponse(conn, "NoDecryptor", "没有可用的解密器")
 				return
 			}
 		}
@@ -505,7 +537,7 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 			gzipReader, err := gzip.NewReader(bytes.NewReader(compressedMsg.Data))
 			if err != nil {
 				fmt.Printf("❌ 创建解压读取器失败: %v\n", err)
-				w.sendErrorResponse("DecompressError", fmt.Sprintf("解压失败: %v", err))
+				w.sendErrorResponse(conn, "DecompressError", fmt.Sprintf("解压失败: %v", err))
 				return
 			}
 			defer gzipReader.Close()
@@ -513,7 +545,7 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 			var decompressedData bytes.Buffer
 			if _, err := decompressedData.ReadFrom(gzipReader); err != nil {
 				fmt.Printf("❌ 解压数据失败: %v\n", err)
-				w.sendErrorResponse("DecompressError", fmt.Sprintf("解压失败: %v", err))
+				w.sendErrorResponse(conn, "DecompressError", fmt.Sprintf("解压失败: %v", err))
 				return
 			}
 
@@ -526,23 +558,23 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 			cmdMsg.RequestId = compressedMsg.RequestId
 			if err := json.Unmarshal(message, &cmdMsg.Data); err != nil {
 				fmt.Printf("❌ 解析解压后的命令数据失败: %v\n", err)
-				w.sendErrorResponse("ParseError", fmt.Sprintf("解析命令失败: %v", err))
+				w.sendErrorResponse(conn, "ParseError", fmt.Sprintf("解析命令失败: %v", err))
 				return
 			}
 
 			if cmdMsg.Type != "call" {
-				w.routeCommand(cmdMsg)
+				w.routeCommand(conn, cmdMsg)
 			}
 		} else {
 			// 处理普通消息
 			var cmdMsg CommandMessage
 			if err := json.Unmarshal(message, &cmdMsg); err != nil {
 				fmt.Printf("❌ 解析命令消息失败: %v\n", err)
-				w.sendErrorResponse("ParseError", fmt.Sprintf("解析命令失败: %v", err))
+				w.sendErrorResponse(conn, "ParseError", fmt.Sprintf("解析命令失败: %v", err))
 				return
 			}
 			if cmdMsg.Type != "call" {
-				w.routeCommand(cmdMsg)
+				w.routeCommand(conn, cmdMsg)
 			}
 		}
 
@@ -552,14 +584,9 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 }
 
 // routeCommand 路由命令到对应的处理函数
-func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
-	jsonBytes, errs := json.Marshal(cmd)
-	if errs != nil {
-		fmt.Println("Error marshaling JSON:", errs)
-		return
-	}
-
-	fmt.Println("🔔 收到命令: ", string(jsonBytes))
+func (w *WebSocketReporter) routeCommand(conn *websocket.Conn, cmd CommandMessage) {
+	// 命令数据可能包含协议密码、Reality 私钥等敏感内容,日志只保留路由信息。
+	fmt.Printf("🔔 收到命令: type=%s requestId=%s\n", cmd.Type, cmd.RequestId)
 	var err error
 	var response CommandResponse
 
@@ -653,7 +680,7 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		response.Message = "OK"
 	}
 
-	w.sendResponse(response)
+	w.sendResponse(conn, response)
 }
 
 // Service 命令处理函数
@@ -895,8 +922,8 @@ func (w *WebSocketReporter) handleSetProtocol(data interface{}) error {
 		return fmt.Errorf("解析协议设置失败: %v", err)
 	}
 
-	// 读取当前值作为默认
-	httpVal, tlsVal, socksVal := 0, 0, 0
+	// 读取当前值作为默认，避免只更新一个开关时重置另外两个开关。
+	httpVal, tlsVal, socksVal := readProtocolConfig()
 
 	if req.HTTP != nil {
 		if *req.HTTP != 0 && *req.HTTP != 1 {
@@ -917,44 +944,14 @@ func (w *WebSocketReporter) handleSetProtocol(data interface{}) error {
 		socksVal = *req.SOCKS
 	}
 
-	// 设置至 service，全量传递（未提供的值沿用0）
+	// 同步写入本地 Agent 配置
+	if err := updateProtocolConfig(httpVal, tlsVal, socksVal); err != nil {
+		return fmt.Errorf("写入 Agent 配置失败: %v", err)
+	}
+
+	// 持久化成功后再切换运行态，保证磁盘配置与当前状态一致。
 	service.SetProtocolBlock(httpVal, tlsVal, socksVal)
-
-	// 同步写入本地 config.json
-	if err := updateLocalConfigJSON(httpVal, tlsVal, socksVal); err != nil {
-		return fmt.Errorf("写入config.json失败: %v", err)
-	}
 	return nil
-}
-
-// updateLocalConfigJSON 将 http/tls/socks 写入工作目录下的 config.json
-func updateLocalConfigJSON(httpVal int, tlsVal int, socksVal int) error {
-	path := "config.json"
-
-	// 读取现有配置
-	type LocalConfig struct {
-		Addr   string `json:"addr"`
-		Secret string `json:"secret"`
-		Http   int    `json:"http"`
-		Tls    int    `json:"tls"`
-		Socks  int    `json:"socks"`
-	}
-
-	var cfg LocalConfig
-	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, &cfg)
-	}
-
-	cfg.Http = httpVal
-	cfg.Tls = tlsVal
-	cfg.Socks = socksVal
-
-	// 写回
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
 }
 
 // handleCall 处理服务端的call回调消息
@@ -995,11 +992,11 @@ func (w *WebSocketReporter) handleCall(data interface{}) error {
 }
 
 // sendResponse 发送响应消息到服务端
-func (w *WebSocketReporter) sendResponse(response CommandResponse) {
+func (w *WebSocketReporter) sendResponse(conn *websocket.Conn, response CommandResponse) {
 	w.connMutex.Lock()
 	defer w.connMutex.Unlock()
 
-	if w.conn == nil || !w.connected {
+	if conn == nil || w.conn != conn || !w.connected {
 		fmt.Printf("❌ 无法发送响应：连接未建立\n")
 		return
 	}
@@ -1046,21 +1043,24 @@ func (w *WebSocketReporter) sendResponse(response CommandResponse) {
 		timeout = 30 * time.Second
 	}
 
-	w.conn.SetWriteDeadline(time.Now().Add(timeout))
-	if err := w.conn.WriteMessage(websocket.TextMessage, messageData); err != nil {
+	conn.SetWriteDeadline(time.Now().Add(timeout))
+	if err := conn.WriteMessage(websocket.TextMessage, messageData); err != nil {
 		fmt.Printf("❌ 发送响应失败: %v\n", err)
-		w.connected = false
+		// 当前函数已经持有 connMutex，直接更新状态，避免重复加锁造成死锁。
+		if w.conn == conn {
+			w.connected = false
+		}
 	}
 }
 
 // sendErrorResponse 发送错误响应
-func (w *WebSocketReporter) sendErrorResponse(responseType, message string) {
+func (w *WebSocketReporter) sendErrorResponse(conn *websocket.Conn, responseType, message string) {
 	response := CommandResponse{
 		Type:    responseType,
 		Success: false,
 		Message: message,
 	}
-	w.sendResponse(response)
+	w.sendResponse(conn, response)
 }
 
 // getUptime 获取系统开机时间（秒）
@@ -1126,33 +1126,73 @@ func getMemoryInfo() MemoryInfo {
 // StartWebSocketReporterWithConfig 使用配置字段启动WebSocket报告器
 func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls int, socks int, version string) *WebSocketReporter {
 
-	// 容错:面板后端地址应为 host:port,但用户常误填 http://host:port,
-	// 会拼成非法的 ws://http://... 导致连不上。这里剥掉 scheme 前缀。
-	addr = strings.TrimPrefix(addr, "http://")
-	addr = strings.TrimPrefix(addr, "https://")
+	// 兼容旧版裸 host:port,同时保留 http/https 以支持 Caddy 等 TLS 入口。
+	panelScheme, panelHost := normalizePanelAddress(addr)
 
-	// 构建初始 WebSocket URL
-	fullURL := "ws://" + addr + "/system-info?type=1&secret=" + secret + "&version=" + version + "&http=" + strconv.Itoa(http) + "&tls=" + strconv.Itoa(tls) + "&socks=" + strconv.Itoa(socks)
+	// 只记录目标地址,不要把包含节点密钥的完整 URL 写入日志。
+	fmt.Printf("🔗 WebSocket连接目标: %s://%s/system-info\n", panelScheme, panelHost)
 
-	fmt.Printf("🔗 WebSocket连接URL: %s\n", fullURL)
-
-	reporter := NewWebSocketReporter(fullURL, secret)
+	reporter := NewWebSocketReporter("", secret)
 	// 保存 addr, secret, version 供重连时使用
 	reporter.addr = addr
 	reporter.secret = secret
 	reporter.version = version
 	reporter.Start()
 
-	// 合体面板:后台预装 sing-box,避免建协议时才现下、把 send_msg 的 10 秒超时卡爆
-	go func() {
-		if err := ensureSingboxInstalled(""); err != nil {
-			fmt.Printf("⚠️ 后台预装 sing-box 失败(建协议时会重试): %v\n", err)
-		} else {
-			fmt.Println("✅ sing-box 已就绪")
-		}
-	}()
+	// Compose 容器重启后,从 /etc/gost 卷恢复已启用的协议配置；
+	// 新节点仍会预装二进制,但没有配置时不会启动 sing-box。
+	go prepareSingboxOnStart()
 
 	return reporter
+}
+
+// normalizePanelAddress 返回 WebSocket 协议和 host:port。
+// 旧配置没有协议时使用 ws;http/https/ws/wss 前缀都可接受,其中 https/wss 映射为 wss。
+func normalizePanelAddress(addr string) (string, string) {
+	addr = strings.TrimSpace(addr)
+	scheme := "ws"
+	lowerAddr := strings.ToLower(addr)
+	for _, item := range []struct {
+		prefix string
+		scheme string
+	}{
+		{prefix: "http://", scheme: "ws"},
+		{prefix: "https://", scheme: "wss"},
+		{prefix: "ws://", scheme: "ws"},
+		{prefix: "wss://", scheme: "wss"},
+	} {
+		if strings.HasPrefix(lowerAddr, item.prefix) {
+			addr = addr[len(item.prefix):]
+			scheme = item.scheme
+			break
+		}
+	}
+	if i := strings.IndexAny(addr, "/?#"); i >= 0 {
+		addr = addr[:i]
+	}
+	addr = strings.TrimSpace(addr)
+
+	// 已经带方括号的 IPv6 地址无需再次处理,同时兼容 [IPv6] 和 [IPv6]:port。
+	if strings.HasPrefix(addr, "[") {
+		return scheme, addr
+	}
+
+	// 兼容旧配置中的 IPv6:port。只有端口是有效数字且前半段确实是 IPv6
+	// 时才拆分,避免把纯 IPv6 地址最后一段误当成端口。
+	if strings.Count(addr, ":") > 1 {
+		if i := strings.LastIndexByte(addr, ':'); i > 0 {
+			host, port := addr[:i], addr[i+1:]
+			if net.ParseIP(host) != nil {
+				if p, err := strconv.Atoi(port); err == nil && p > 0 && p <= 65535 {
+					return scheme, net.JoinHostPort(host, port)
+				}
+			}
+		}
+		if net.ParseIP(addr) != nil {
+			return scheme, "[" + addr + "]"
+		}
+	}
+	return scheme, addr
 }
 
 // handleTcpPing 处理TCP ping诊断命令

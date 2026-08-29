@@ -14,7 +14,7 @@
 
 | | 说明 |
 |---|---|
-| **协议管理** | 一键搭全套协议(VLESS-Reality / Trojan / VMess / Hysteria2 / TUIC / AnyTLS),出订阅给用户 |
+| **协议管理** | 一键搭全套协议(VLESS-Reality / Trojan / VMess / Shadowsocks-2022 / Hysteria2 / TUIC / AnyTLS),出订阅给用户 |
 | **中转** | 前置机搭协议 + 落地出口(住宅 socks / 机场节点 / 自己的节点),给用户干净出口 IP,自带在线测落地 |
 | **端口转发 / 隧道转发** | 通用端口搬运、两级加密中转 |
 | **限速 / 流量 / 到期** | 每个用户独立限速(TCP + UDP 都限)、流量配额、到期时间 |
@@ -33,7 +33,7 @@
 | | 装在哪 | 装什么 | 需要 Docker |
 |---|---|---|---|
 | **面板端** | 一台机器即可 | 中央管理面板 | 是(脚本自动装) |
-| **节点端** | 每台转发机 | gost 裸二进制 | 否 |
+| **节点端** | 每台转发机 | Docker Compose：TMS Agent + sing-box | 是 |
 
 <br>
 
@@ -42,7 +42,7 @@
 找一台机器执行:
 
 ```bash
-curl -L https://raw.githubusercontent.com/Teminuosi/Tms/main/panel_install.sh -o panel_install.sh && chmod +x panel_install.sh && ./panel_install.sh
+curl -L https://raw.githubusercontent.com/PlanetSider/Tms/main/panel_install.sh -o panel_install.sh && chmod +x panel_install.sh && ./panel_install.sh
 ```
 
 装完会打印访问地址。默认账号 **admin_user** / **admin_user**。
@@ -54,7 +54,10 @@ curl -L https://raw.githubusercontent.com/Teminuosi/Tms/main/panel_install.sh -o
 
 ### 第二步 · 装节点端
 
-**不用手敲命令,在面板里生成:**
+节点端生产环境需要 Linux、Docker Engine 和 Docker Compose 插件。面板和节点可以部署在不同机器上。
+节点 Compose 使用 host network，Docker Desktop 的 host network 行为与 Linux 不同，不建议用于生产转发节点。
+
+**不用手敲密钥,在面板里生成安装命令:**
 
 ```
 登录面板 → 左侧「转发机监控」→「新增」填这台机器的 IP → 保存
@@ -62,6 +65,9 @@ curl -L https://raw.githubusercontent.com/Teminuosi/Tms/main/panel_install.sh -o
 ```
 
 弹出的命令已经带好了「面板地址 + 该机器专属密钥」,全自动、无需手输。
+
+节点端会以一个 Compose 容器运行 Agent 和 sing-box,使用 host network 保留 TCP、UDP 以及面板下发的端口行为。
+配置、证书和运行时数据保存在 Docker volume 中,节点机不需要安装 gost 或 sing-box 裸二进制。
 
 > [!NOTE]
 > 密钥是**新增转发机时才生成的、只有面板知道**,所以节点端命令必须从面板里拿,
@@ -72,32 +78,42 @@ curl -L https://raw.githubusercontent.com/Teminuosi/Tms/main/panel_install.sh -o
 > [!IMPORTANT]
 > **国内机器(阿里云 / 腾讯云 / 华为云等)看这里**
 >
-> 直连 GitHub 会超时,表现是卡在下载那一步不动,或者装完面板报
-> 「sing-box 未运行」。用镜像加速,并加 `-c` 强制内部下载也走国内镜像:
+> 节点镜像包含 Agent 和 sing-box,节点安装阶段会从 GHCR 拉取完整镜像。
+> 如果节点机访问 `ghcr.io` 失败,需要先为 Docker 配置可用的镜像仓库或网络出口,
+> 再重新执行面板生成的 Compose 命令:
 >
 > ```bash
-> curl -L https://ghfast.top/https://raw.githubusercontent.com/Teminuosi/Tms/main/install.sh -o install.sh && chmod +x install.sh && ./install.sh -c -a 面板地址:端口 -s 你的密钥
+> cd /opt/tms-node && docker compose pull && docker compose up -d --force-recreate
 > ```
 >
-> `面板地址` 和 `密钥` 就从上面「点安装」弹出的那条命令里抄。
->
-> **镜像失效了怎么办**:把命令里的 `ghfast.top` 整体换成下面任一个,
-> 并在命令最前面加 `GH_MIRROR=https://新镜像/`(让内部下载 gost 也走它):
-> `gh-proxy.com` · `ghproxy.net` · `mirror.ghproxy.com`
+> 这条命令不会改变节点密钥,容器恢复后面板会自动重新下发协议配置。
 
 <details>
-<summary>手动装节点端(不推荐)</summary>
+<summary>旧版裸机节点兼容入口(不推荐)</summary>
 
 <br>
 
-也可以直接在机器上跑裸命令,它会**交互式询问**面板地址和密钥
-(密钥同样得先在面板「转发机监控」新增该转发机才有):
+旧版本节点仍可以使用 install.sh 安装 gost 裸机服务。新部署建议统一使用上面的 Compose 方式,
+因为裸机入口不会创建节点 Compose 项目:
 
 ```bash
-curl -L https://raw.githubusercontent.com/Teminuosi/Tms/main/install.sh -o install.sh && chmod +x install.sh && ./install.sh
+curl -L https://raw.githubusercontent.com/PlanetSider/Tms/main/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
 
 </details>
+
+### 节点常用命令
+
+```bash
+cd /opt/tms-node
+docker compose pull
+docker compose up -d --force-recreate
+docker compose ps
+docker compose logs -f node
+docker compose down
+```
+
+节点 Compose 使用 host network,因此不需要在 Compose 文件里单独映射端口;云安全组和主机防火墙仍需放行面板下发的协议端口。
 
 <br>
 
@@ -166,7 +182,7 @@ tms domain panel.example.com
 好处除了不暴露 IP,还有:**机器 IP 被墙时改条 DNS 解析就活了,不用通知车友重新拉订阅。**
 
 > ⚠️ **这只是"不直接显示",不是真正的隐藏。** 对方 `ping` 一下域名照样拿到 IP。
-> 要做到查都查不到,只有走 CDN(Cloudflare 橙云),而目前一键搭建的六个协议
+> 要做到查都查不到,只有走 CDN(Cloudflare 橙云),而目前一键搭建的七个协议
 > (VLESS-Reality / Trojan-Reality / VMess / Hysteria2 / TUIC / AnyTLS)都过不了 CDN
 > —— Reality 要跟真实服务端直接握手、Hysteria2 和 TUIC 走 UDP,CF 都不转发。
 > 挡普通车友足够,防封锁不行。
@@ -178,9 +194,9 @@ tms domain panel.example.com
 | 角色 | 装了什么 | 有 `tms` 命令吗 |
 |---|---|---|
 | **面板机**(只有一台) | Docker:MySQL + 后端 + 前端 | ✅ 有 |
-| **节点机 / 转发机**(每台) | gost + sing-box(systemd 服务) | ❌ 没有 |
+| **节点机 / 转发机**(每台) | Docker Compose:Agent + sing-box | ❌ 没有 |
 
-> ⚠️ `tms purge` 和 `panel_install.sh purge` **只清面板**,对节点机上的 gost 一点作用都没有。反过来,清节点也不会影响面板。两边要分别执行。
+> ⚠️ `tms purge` 和 `panel_install.sh purge` **只清面板**,对节点机上的 Agent 和 sing-box 一点作用都没有。反过来,清节点也不会影响面板。两边要分别执行。
 
 ### 一、卸载面板机
 
@@ -195,7 +211,7 @@ tms purge
 如果 `tms` 命令不在了(比如当初就没装成功),用一次性脚本:
 
 ```bash
-curl -L https://raw.githubusercontent.com/Teminuosi/Tms/main/panel_install.sh -o /tmp/tms.sh && bash /tmp/tms.sh purge
+curl -L https://raw.githubusercontent.com/PlanetSider/Tms/main/panel_install.sh -o /tmp/tms.sh && bash /tmp/tms.sh purge
 ```
 
 > 💡 最好 **cd 到当初安装面板的目录**再执行。不在那个目录时,脚本会从 `/usr/local/bin/tms` 里读回安装目录并自动切过去;
@@ -216,36 +232,28 @@ tms purge
 ### 二、卸载节点机(转发机)
 
 > 🚨 **面板机同时也当转发机用的话,千万别在它上面跑这段。**
-> 很多人把面板和第一台转发机装在同一台机器上,这段命令会把**本机的节点服务一起停掉并 disable**
-> —— 所有协议瞬间全部失效,而面板里节点还显示「在线」(gost 是另一个服务,它还活着),
-> 极难联想到是刚才那条命令干的。只想卸载**其它**转发机时,请 SSH 到那台机器上执行。
->
-> 万一误跑了,恢复:`systemctl enable --now sing-box`
-> ——必须带 `enable`,因为它被 `disable` 过,只 `start` 的话重启机器又会消失。
+> 现在节点服务由 Compose 项目管理,只需在节点项目目录执行对应命令。确认当前目录是
+> `/opt/tms-node`,不要在面板项目目录执行。
 
-**每台转发机都要单独执行**,直接复制这段:
+**保留配置、证书和 Docker volume:**
 
 ```bash
-systemctl stop gost sing-box 2>/dev/null
-systemctl disable gost sing-box 2>/dev/null
-rm -rf /etc/systemd/system/sing-box.service.d /etc/gost
-find /etc/systemd /run/systemd \( -name 'gost.service' -o -name 'sing-box.service' \) -delete 2>/dev/null
-systemctl daemon-reload
-systemctl reset-failed 2>/dev/null
-echo "✅ 节点已卸载(gost + sing-box + 配置 + 证书)"
+cd /opt/tms-node
+docker compose down
 ```
 
-> ⚠️ **别只删 `/etc/gost`**。搭过协议的机器上还有 sing-box,它的服务文件在 `/etc/systemd/system/`,只删安装目录的话二进制没了、服务还注册着,systemd 会一直重启失败刷满日志。
-
-> 💡 上面用 `find ... -delete` 而不是直接 `rm` 服务文件,是为了连 `multi-user.target.wants/` 里的**软链接**一起清掉。正常情况 `systemctl disable` 会删它们,但服务已经异常时可能残留,结果 `systemctl list-units --all` 里一直挂着一条 `not-found`,看着像没卸干净。
-
-也可以重新下节点脚本走菜单(选 `3` 卸载):
+**彻底删除节点配置、证书和 volume:**
 
 ```bash
-curl -L https://raw.githubusercontent.com/Teminuosi/Tms/main/install.sh -o /tmp/n.sh && chmod +x /tmp/n.sh && /tmp/n.sh
+cd /opt/tms-node
+docker compose down -v
+rm -f docker-compose.yml .env
+cd ..
+rmdir /opt/tms-node 2>/dev/null || true
 ```
 
-> 💡 **国内机器**(阿里云等)大概率下不动 GitHub,直接用上面那段命令。
+`docker compose down -v` 会删除节点 Compose 创建的 `node_data` volume,因此彻底删除后
+配置、证书和 sing-box 运行数据都无法从 Docker volume 中恢复。
 
 ### 三、验证是否清干净
 
@@ -257,11 +265,11 @@ command -v tms
 
 **节点机:**
 ```bash
-systemctl list-units --all | grep -E 'gost|sing-box'
-ls /etc/gost
+docker ps -a --filter name=tms-node
+docker volume ls --filter name=node_data
 ```
 
-都没有输出就说明干净了。
+卸载后不应再显示运行中的节点容器;如果执行了 `down -v`,也不应再显示节点 volume。
 
 ### 四、顺手清理防火墙(可选)
 
@@ -301,5 +309,5 @@ ufw delete <编号>        # 逐条删
 
 ---
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Teminuosi/Tms&type=Date)](https://www.star-history.com/#Teminuosi/Tms&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=PlanetSider/Tms&type=Date)](https://www.star-history.com/#PlanetSider/Tms&Date)
 

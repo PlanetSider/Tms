@@ -42,7 +42,6 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
         String tls = serverHttpRequest.getServletRequest().getParameter("tls");
         String socks = serverHttpRequest.getServletRequest().getParameter("socks");
         if (Objects.equals(type, "1")) {
-            System.out.println("type: " + type + " - version: " + version + " - secret: " + secret + " - IP: " + getClientIp(request));
             Node node = nodeService.getOne(new QueryWrapper<Node>().eq("secret", secret));
             if (node == null) {
                 log.info("节点验证失败：未找到匹配的secret");
@@ -54,7 +53,7 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
             attributes.put("http",http);
             attributes.put("tls",tls);
             attributes.put("socks",socks);
-            log.info("节点 {} 通过验证，版本: {}", node.getId(), version);
+            log.info("节点 {} 通过验证，版本: {}, IP: {}", node.getId(), version, getClientIp(request));
             // 不在这里更新状态，等到连接建立后再统一更新
         }else {
             boolean b = JwtUtil.validateToken(secret);
@@ -67,7 +66,7 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
 
     public String getClientIp(ServerHttpRequest request) {
         InetSocketAddress remoteAddress = request.getRemoteAddress();
-        if (remoteAddress != null) {
+        if (remoteAddress != null && remoteAddress.getAddress() != null) {
             return remoteAddress.getAddress().getHostAddress();
         }
         return null;

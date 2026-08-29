@@ -1,0 +1,7 @@
+.git
+.github
+*.exe
+*.tar.gz
+gost-amd64
+gost-arm64
+sing-box

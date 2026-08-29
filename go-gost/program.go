@@ -16,6 +16,7 @@ import (
 	metrics "github.com/go-gost/x/metrics/service"
 	"github.com/go-gost/x/registry"
 	xservice "github.com/go-gost/x/service"
+	"github.com/go-gost/x/socket"
 	"github.com/judwhite/go-svc"
 	"net/http"
 	"os"
@@ -175,6 +176,10 @@ func (p *program) run(cfg *config.Config) error {
 }
 
 func (p *program) Stop() error {
+	if err := socket.StopSingbox(); err != nil {
+		logger.Default().Error(err)
+	}
+
 	if p.cancel != nil {
 		p.cancel()
 	}
