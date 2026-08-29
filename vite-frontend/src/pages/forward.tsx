@@ -47,7 +47,10 @@ import {
   diagnoseForward,
   updateForwardOrder,
   getSpeedLimitList,
-  getInboundList
+  getInboundList,
+  getAllUsers,
+  assignForwardToUser,
+  setForwardClientLink
 } from "@/api";
 import { JwtUtil } from "@/utils/jwt";
 
@@ -85,6 +88,7 @@ interface Forward {
   inx?: number;
   expTime?: number;
   speedId?: number;
+  clientLink?: string;
   /** 搭协议/搭中转自动生成的内部管道,默认不显示在这一页 */
   protocolManaged?: boolean;
 }
@@ -234,6 +238,16 @@ export default function ForwardPage() {
   // 表单验证错误
   const [errors, setErrors] = useState<{[key: string]: string}>({});
   const [selectedTunnel, setSelectedTunnel] = useState<Tunnel | null>(null);
+
+  // 分配已有转发给车友
+  const [assignModalOpen, setAssignModalOpen] = useState(false);
+  const [assignForward, setAssignForward] = useState<Forward | null>(null);
+  const [assignUsers, setAssignUsers] = useState<any[]>([]);
+  const [assignUserId, setAssignUserId] = useState<number | null>(null);
+  const [assignSpeedId, setAssignSpeedId] = useState<number | null>(null);
+  const [assignExpDate, setAssignExpDate] = useState<string | null>(null);
+  const [assignClientLink, setAssignClientLink] = useState('');
+  const [assignLoading, setAssignLoading] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -525,6 +539,67 @@ export default function ForwardPage() {
   const handleDelete = (forward: Forward) => {
     setForwardToDelete(forward);
     setDeleteModalOpen(true);
+  };
+
+  const handleAssign = async (forward: Forward) => {
+    try {
+      const res = await getAllUsers();
+      if (res.code !== 0) {
+        toast.error(res.msg || '获取车友列表失败');
+        return;
+      }
+      const users = (Array.isArray(res.data) ? res.data : [])
+        .filter((u: any) => u.roleId !== 0 && u.status === 1);
+      if (!users.length) {
+        toast.error('暂无可分配的车友');
+        return;
+      }
+      setAssignForward(forward);
+      setAssignUsers(users);
+      setAssignUserId(null);
+      setAssignSpeedId(null);
+      setAssignExpDate(null);
+      setAssignClientLink('');
+      setAssignModalOpen(true);
+    } catch {
+      toast.error('获取车友列表失败');
+    }
+  };
+
+  const submitAssign = async () => {
+    if (!assignForward || !assignUserId) {
+      toast.error('请选择车友');
+      return;
+    }
+    setAssignLoading(true);
+    try {
+      const res = await assignForwardToUser({
+        forwardId: assignForward.id,
+        userId: assignUserId,
+        speedId: assignSpeedId,
+        expTime: assignExpDate ? new Date(`${assignExpDate}T23:59:59`).getTime() : null
+      });
+      if (res.code === 0) {
+        let linkSaveFailed = false;
+        const assignedId = (res.data as any)?.id;
+        if (assignedId && assignClientLink.trim()) {
+          const linkRes = await setForwardClientLink(assignedId, assignClientLink.trim());
+          if (linkRes.code !== 0) {
+            linkSaveFailed = true;
+            toast.error(`转发已分配，但分享链接保存失败：${linkRes.msg || '请稍后重试'}`);
+          }
+        }
+        if (!linkSaveFailed) toast.success('已分配给车友');
+        setAssignModalOpen(false);
+        loadData(false);
+      } else {
+        toast.error(res.msg || '分配失败');
+      }
+    } catch {
+      toast.error('分配失败');
+    } finally {
+      setAssignLoading(false);
+    }
   };
 
   // 确认删除转发
@@ -1378,6 +1453,17 @@ export default function ForwardPage() {
           </div>
           
           <div className="flex gap-1.5 mt-3">
+            {JwtUtil.getRoleIdFromToken() === 0 && !forward.protocolManaged && (
+              <Button
+                size="sm"
+                variant="flat"
+                color="secondary"
+                onPress={() => handleAssign(forward)}
+                className="flex-1 min-h-8"
+              >
+                分配
+              </Button>
+            )}
             <Button
               size="sm"
               variant="flat"
@@ -1928,6 +2014,75 @@ export default function ForwardPage() {
           </ModalContent>
         </Modal>
 
+        {/* 分配转发给车友 */}
+        <Modal
+          isOpen={assignModalOpen}
+          onClose={() => setAssignModalOpen(false)}
+          size="lg"
+          scrollBehavior="outside"
+        >
+          <ModalContent>
+            <ModalHeader>分配转发给车友</ModalHeader>
+            <ModalBody>
+              <p className="text-small text-default-500 mb-2">
+                将「{assignForward?.name || ''}」复制为独立入口端口，车友拥有独立的限速、到期和流量统计。
+              </p>
+              <div className="space-y-4">
+                <Select
+                  label="车友"
+                  placeholder="请选择车友"
+                  selectedKeys={assignUserId ? [String(assignUserId)] : []}
+                  onSelectionChange={(keys) => {
+                    const key = Array.from(keys)[0] as string;
+                    setAssignUserId(key ? Number(key) : null);
+                  }}
+                  isRequired
+                >
+                  {assignUsers.map((u: any) => (
+                    <SelectItem key={String(u.id)} textValue={u.user}>
+                      {u.user}
+                    </SelectItem>
+                  ))}
+                </Select>
+                <Select
+                  label="限速规则"
+                  selectedKeys={assignSpeedId ? [String(assignSpeedId)] : ['none']}
+                  onSelectionChange={(keys) => {
+                    const key = Array.from(keys)[0] as string;
+                    setAssignSpeedId(key === 'none' || !key ? null : Number(key));
+                  }}
+                >
+                  <>
+                    <SelectItem key="none" textValue="不限速">不限速</SelectItem>
+                    {speedRules.filter((rule: any) => rule.status === undefined || rule.status === 1).map((rule: any) => (
+                      <SelectItem key={String(rule.id)} textValue={rule.name}>
+                        {rule.name}
+                      </SelectItem>
+                    ))}
+                  </>
+                </Select>
+                <DatePicker
+                  label="到期时间（留空=永久）"
+                  value={assignExpDate ? parseDate(assignExpDate) as any : null}
+                  onChange={(date) => setAssignExpDate(date ? `${date.year}-${String(date.month).padStart(2, '0')}-${String(date.day).padStart(2, '0')}` : null)}
+                  showMonthAndYearPickers
+                />
+                <Textarea
+                  label="客户端分享链接（可选）"
+                  placeholder="例如 socks5:// 或协议分享链接"
+                  value={assignClientLink}
+                  onChange={(e) => setAssignClientLink(e.target.value)}
+                  minRows={2}
+                />
+              </div>
+            </ModalBody>
+            <ModalFooter>
+              <Button variant="light" onPress={() => setAssignModalOpen(false)}>取消</Button>
+              <Button color="primary" onPress={submitAssign} isLoading={assignLoading}>确认分配</Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
+
         {/* 地址列表弹窗 */}
         <Modal isOpen={addressModalOpen} onClose={() => setAddressModalOpen(false)} size="lg" scrollBehavior="outside">
           <ModalContent>
@@ -2370,4 +2525,4 @@ export default function ForwardPage() {
       </div>
     
   );
-} 
+}

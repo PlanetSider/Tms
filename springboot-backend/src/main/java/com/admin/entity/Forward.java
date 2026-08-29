@@ -52,4 +52,7 @@ public class Forward extends BaseEntity{
     @TableField(updateStrategy = FieldStrategy.IGNORED)
     private Long expTime;
 
+    /** 分配给车友的客户端分享链接；仅这类转发填写，聚合订阅会原样输出 */
+    private String clientLink;
+
 }

@@ -190,9 +190,10 @@ export default function UserPage() {
       // 后端返回结构从数组改成了 {lines, allSubToken},两种都认(版本不同步也不炸)
       const d: any = res.code === 0 ? res.data : null;
       const lines = Array.isArray(d) ? d : (d?.lines || []);
-      setSubAllToken(!Array.isArray(d) && d?.allSubToken ? d.allSubToken : '');
-      if (!lines.length) {
-        toast.error('该车友还没分配任何线路,先去「协议管理」或「中转」分配');
+      const allToken = !Array.isArray(d) && d?.allSubToken ? d.allSubToken : '';
+      setSubAllToken(allToken);
+      if (!lines.length && !allToken) {
+        toast.error('该车友还没分配任何线路或转发');
         return;
       }
       setSubUserName(user.user);
@@ -1533,7 +1534,7 @@ export default function UserPage() {
               每台机器一条订阅(直连 / 中转各一条)。发对应的一条给车友:v2rayN → 订阅 → 添加 → 粘贴 → 更新。
             </div>
 
-            {subAllToken && subLines.length > 1 && (
+            {subAllToken && (
               <div className="border border-primary/40 bg-primary/5 rounded-lg p-3 space-y-2">
                 <div className="flex items-center gap-2 flex-wrap">
                   <Chip size="sm" color="primary" variant="flat">⭐ 全部线路</Chip>
@@ -1681,4 +1682,4 @@ export default function UserPage() {
       </div>
 
   );
-} 
+}

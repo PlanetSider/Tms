@@ -29,6 +29,7 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,6 +48,7 @@ import java.util.UUID;
  * @since 2026-07-19
  */
 @Service
+@Slf4j
 public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> implements InboundService {
 
     private static final int TUNNEL_TYPE_PORT_FORWARD = 1;
@@ -344,6 +346,12 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         // 0. 查重:已给这个用户分过这个协议 → 直接返回现有链接 + 订阅,不重复建(避免重复占端口/转发)
         InboundUser existed = inboundUserMapper.selectOne(new QueryWrapper<InboundUser>()
                 .eq("inbound_id", in.getId()).eq("user_id", user.getId()).last("limit 1"));
+        // 分配记录可能因隧道/转发被删除而成为孤儿；清理后允许本次请求重新创建。
+        if (existed != null && (existed.getGostForwardId() == null
+                || forwardMapper.selectById(existed.getGostForwardId()) == null)) {
+            inboundUserMapper.deleteById(existed.getId());
+            existed = null;
+        }
         if (existed != null) {
             Forward f = existed.getGostForwardId() != null ? forwardMapper.selectById(existed.getGostForwardId()) : null;
             JSONObject result = new JSONObject();
@@ -481,6 +489,12 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             }
             InboundUser existed = inboundUserMapper.selectOne(new QueryWrapper<InboundUser>()
                     .eq("inbound_id", in.getId()).eq("user_id", user.getId()).last("limit 1"));
+            // 与单条分配一致：孤儿记录不应阻止重新分配。
+            if (existed != null && (existed.getGostForwardId() == null
+                    || forwardMapper.selectById(existed.getGostForwardId()) == null)) {
+                inboundUserMapper.deleteById(existed.getId());
+                existed = null;
+            }
             if (existed != null) {
                 skipped++;
                 // 已分过这个协议 → 不能只是跳过。重新分配 = 续费 / 改配置,
@@ -684,6 +698,22 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 links.add(link);
             }
         }
+        // 分配给车友的普通端口转发没有线路/协议记录，使用客户端上传的链接加入聚合订阅。
+        // client_link 是升级迁移字段；列尚未成功创建时只跳过转发，不能让协议订阅整体失败。
+        try {
+            for (Forward fwd : forwardMapper.selectList(new QueryWrapper<Forward>()
+                    .eq("user_id", u.getId().intValue()).isNotNull("client_link"))) {
+                if (fwd.getStatus() != null && fwd.getStatus() != 1) {
+                    continue;
+                }
+                String clientLink = fwd.getClientLink();
+                if (clientLink != null && !clientLink.trim().isEmpty()) {
+                    links.add(clientLink.trim());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("聚合订阅读取车友转发链接失败，将只返回协议节点: " + e.getMessage());
+        }
         String joined = String.join("\n", links);
         return java.util.Base64.getEncoder()
                 .encodeToString(joined.getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -752,10 +782,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             // 两种订阅里同一个节点应该叫同一个名字,不然车友对不上。
             String normalizedProtocol = in.getProtocol() == null ? ""
                     : in.getProtocol().trim().toLowerCase(java.util.Locale.ROOT);
-            String remark = (in.getRemark() != null && !in.getRemark().isEmpty())
-                    ? in.getRemark()
-                    : protocolDisplayName(normalizedProtocol);
-            if (aggUser != null) {
+            boolean customName = in.getRemark() != null && !in.getRemark().isEmpty();
+            String remark = customName ? in.getRemark() : protocolDisplayName(normalizedProtocol);
+            if (aggUser != null && !customName) {
                 StringBuilder prefix = new StringBuilder(node.getName());
                 if (lid != null) {
                     String ln = landingNames.get(lid);
@@ -848,10 +877,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     /** namePrefix:聚合订阅里用来标注这个节点属于哪条线路,单条线路订阅传空串 */
     private String buildClientLink(Inbound in, InboundUser iu, Node node, Forward forward, String namePrefix) {
-        String remark = (in.getRemark() != null && !in.getRemark().isEmpty())
-                ? in.getRemark()
-                : protocolDisplayName(in.getProtocol());
-        if (namePrefix != null && !namePrefix.isEmpty()) {
+        boolean customName = in.getRemark() != null && !in.getRemark().isEmpty();
+        String remark = customName ? in.getRemark() : protocolDisplayName(in.getProtocol());
+        if (!customName && namePrefix != null && !namePrefix.isEmpty()) {
             remark = namePrefix + remark;
         }
         String uuid = iu.getUuid();
@@ -1032,11 +1060,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         // 前端做了两种格式的兼容,老前端配新后端也不会白屏。
         JSONObject result = new JSONObject();
         result.put("lines", lines);
-        if (!lines.isEmpty()) {
-            User u = userMapper.selectById(userId);
-            if (u != null) {
-                result.put("allSubToken", ensureAllSubToken(u));
-            }
+        User u = userMapper.selectById(userId);
+        if (u != null) {
+            result.put("allSubToken", ensureAllSubToken(u));
         }
         return R.ok(result);
     }
@@ -1382,13 +1408,17 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     /** 确保节点有一条端口转发隧道(入口机=该节点),没有则建 */
     private Tunnel ensurePortForwardTunnel(Long nodeId) {
+        String managedName = "inbound-tunnel-node" + nodeId;
         Tunnel tunnel = tunnelMapper.selectOne(new QueryWrapper<Tunnel>()
-                .eq("in_node_id", nodeId).eq("type", TUNNEL_TYPE_PORT_FORWARD).last("limit 1"));
+                .eq("in_node_id", nodeId)
+                .eq("type", TUNNEL_TYPE_PORT_FORWARD)
+                .eq("name", managedName)
+                .last("limit 1"));
         if (tunnel != null) {
             return tunnel;
         }
         TunnelDto tdto = new TunnelDto();
-        tdto.setName("inbound-tunnel-node" + nodeId);
+        tdto.setName(managedName);
         tdto.setInNodeId(nodeId);
         tdto.setType(TUNNEL_TYPE_PORT_FORWARD);
         tdto.setFlow(1);
@@ -1399,7 +1429,10 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             return null;
         }
         return tunnelMapper.selectOne(new QueryWrapper<Tunnel>()
-                .eq("in_node_id", nodeId).eq("type", TUNNEL_TYPE_PORT_FORWARD).last("limit 1"));
+                .eq("in_node_id", nodeId)
+                .eq("type", TUNNEL_TYPE_PORT_FORWARD)
+                .eq("name", managedName)
+                .last("limit 1"));
     }
 
     /** 分配 sing-box 本机监听口(40000+,避开 gost 公网口段) */

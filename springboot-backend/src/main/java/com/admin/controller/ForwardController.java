@@ -34,6 +34,47 @@ public class ForwardController extends BaseController {
         return forwardService.createForward(forwardDto);
     }
 
+    /** 将已有转发复制并分配给车友。 */
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/assign")
+    public R assignToUser(@RequestBody Map<String, Object> params) {
+        Object forwardId = params.get("forwardId");
+        Object userId = params.get("userId");
+        if (forwardId == null || userId == null) {
+            return R.err("参数不完整");
+        }
+        try {
+            Object speedId = params.get("speedId");
+            Object expTime = params.get("expTime");
+            return forwardService.assignForwardToUser(
+                    Long.valueOf(forwardId.toString()),
+                    Integer.valueOf(userId.toString()),
+                    speedId == null ? null : Integer.valueOf(speedId.toString()),
+                    expTime == null ? null : Long.valueOf(expTime.toString()));
+        } catch (NumberFormatException e) {
+            return R.err("参数格式错误");
+        }
+    }
+
+    /** 写入或清空车友转发的客户端链接。 */
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/set-link")
+    public R setClientLink(@RequestBody Map<String, Object> params) {
+        Object forwardId = params.get("forwardId");
+        if (forwardId == null) {
+            return R.err("参数不完整");
+        }
+        try {
+            Object link = params.get("link");
+            return forwardService.setForwardClientLink(
+                    Long.valueOf(forwardId.toString()), link == null ? null : link.toString());
+        } catch (NumberFormatException e) {
+            return R.err("参数格式错误");
+        }
+    }
+
     @LogAnnotation
     @PostMapping("/list")
     public R readAll() {

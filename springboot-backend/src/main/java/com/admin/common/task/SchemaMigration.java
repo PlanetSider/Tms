@@ -52,6 +52,10 @@ public class SchemaMigration implements ApplicationRunner {
         // 「全部线路」聚合订阅 token:一条链接包含该车友所有未停用线路的节点
         addColumnIfMissing("user", "all_sub_token",
                 "ALTER TABLE `user` ADD COLUMN `all_sub_token` VARCHAR(64) NULL COMMENT '全部线路聚合订阅token'");
+
+        // 分配给车友的转发需要保存一条可直接导入客户端的链接，供聚合订阅输出。
+        addColumnIfMissing("forward", "client_link",
+                "ALTER TABLE `forward` ADD COLUMN `client_link` VARCHAR(1024) NULL COMMENT '车友转发客户端分享链接'");
     }
 
     /** 创建协议/中转/线路表。所有语句都可重复执行,单条失败不会阻断面板启动。 */

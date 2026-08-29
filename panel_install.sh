@@ -1416,6 +1416,10 @@ SET @sql = (SELECT IF(NOT EXISTS (
   SELECT 1 FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = 'user' AND column_name = 'all_sub_token'
 ), 'ALTER TABLE \`user\` ADD COLUMN \`all_sub_token\` VARCHAR(64) DEFAULT NULL;', 'SELECT 1'));
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = (SELECT IF(NOT EXISTS (
+  SELECT 1 FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = 'forward' AND column_name = 'client_link'
+), 'ALTER TABLE \`forward\` ADD COLUMN \`client_link\` VARCHAR(1024) DEFAULT NULL COMMENT "车友转发客户端分享链接";', 'SELECT 1'));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- 协议限速不绑定 tunnel,旧库将该列从 NOT NULL 改成可空。
 ALTER TABLE \`speed_limit\` MODIFY COLUMN \`tunnel_id\` BIGINT(20) NULL DEFAULT NULL;

@@ -45,7 +45,8 @@ CREATE TABLE `forward` (
   `status` int(10) NOT NULL,
   `inx` int(10) NOT NULL DEFAULT '0',
   `speed_id` int(10) DEFAULT NULL,
-  `exp_time` bigint(20) DEFAULT NULL
+  `exp_time` bigint(20) DEFAULT NULL,
+  `client_link` varchar(1024) DEFAULT NULL COMMENT '车友转发客户端分享链接'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- --------------------------------------------------------

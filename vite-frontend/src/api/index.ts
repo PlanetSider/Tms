@@ -55,6 +55,10 @@ export const getForwardList = () => Network.post("/forward/list");
 export const updateForward = (data: any) => Network.post("/forward/update", data);
 export const deleteForward = (id: number) => Network.post("/forward/delete", { id });
 export const forceDeleteForward = (id: number) => Network.post("/forward/force-delete", { id });
+export const assignForwardToUser = (data: { forwardId: number; userId: number; speedId?: number | null; expTime?: number | null }) =>
+  Network.post("/forward/assign", data);
+export const setForwardClientLink = (forwardId: number, link: string | null) =>
+  Network.post("/forward/set-link", { forwardId, link });
 
 // 转发服务控制操作 - 通过Java后端接口
 export const pauseForwardService = (forwardId: number) => Network.post("/forward/pause", { id: forwardId });

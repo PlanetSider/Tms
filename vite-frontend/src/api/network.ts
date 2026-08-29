@@ -84,6 +84,7 @@ const SLOW_PATHS = [
   '/node/install',
   '/forward/create',
   '/forward/update',
+  '/forward/assign',
   '/tunnel/diagnose',
   '/forward/diagnose',
 ];

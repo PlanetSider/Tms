@@ -92,4 +92,10 @@ public interface ForwardService extends IService<Forward> {
      * @return R.ok(Forward) 或 R.err
      */
     R createForwardForUser(ForwardDto forwardDto, Integer userId, String userName);
+
+    /** 将已有转发复制一份分配给车友，复制记录与源转发共享隧道和目标但独立计费。 */
+    R assignForwardToUser(Long forwardId, Integer userId, Integer speedId, Long expTime);
+
+    /** 写入或清空分配给车友的客户端分享链接。 */
+    R setForwardClientLink(Long forwardId, String link);
 }

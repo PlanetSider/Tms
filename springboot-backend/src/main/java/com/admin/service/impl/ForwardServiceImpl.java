@@ -21,8 +21,10 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
+import java.net.URI;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -65,6 +67,9 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
     @Resource
     NodeService nodeService;
+
+    @Resource
+    SpeedLimitService speedLimitService;
 
     // 合体面板:转发端口分配需避开协议入站占用的 sing-box 本机口
     @Resource
@@ -195,6 +200,155 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         return R.ok(forward);
     }
 
+    /**
+     * 将已有转发复制一份分配给车友。源记录在事务中加行锁，避免同一转发并发分配出多份记录。
+     */
+    @Override
+    @Transactional
+    public R assignForwardToUser(Long forwardId, Integer userId, Integer speedId, Long expTime) {
+        if (forwardId == null || userId == null || userId <= 0) {
+            return R.err("参数不完整");
+        }
+        Forward src = this.getOne(new QueryWrapper<Forward>()
+                .eq("id", forwardId)
+                .last("FOR UPDATE"));
+        if (src == null) {
+            return R.err("转发不存在");
+        }
+        User user = userService.getById(userId.longValue());
+        if (user == null) {
+            return R.err("车友不存在");
+        }
+        if (user.getStatus() != null && user.getStatus() != 1) {
+            return R.err("车友已禁用");
+        }
+        Tunnel tunnel = validateTunnel(src.getTunnelId());
+        if (tunnel == null) {
+            return R.err("隧道不存在");
+        }
+        if (!Objects.equals(tunnel.getStatus(), TUNNEL_STATUS_ACTIVE)) {
+            return R.err("隧道已禁用，无法分配");
+        }
+
+        String name = "fwd-" + src.getId() + "-user-" + userId;
+        Forward existed = this.getOne(new QueryWrapper<Forward>()
+                .eq("name", name)
+                .last("limit 1"));
+        if (existed != null) {
+            return R.ok(existed);
+        }
+
+        Integer limiter = null;
+        if (speedId != null) {
+            limiter = (int) (com.admin.common.task.CheckGostConfigAsync.PER_USER_LIMITER_BASE + userId);
+            R limiterResult = speedLimitService.pushUserLimiter(speedId, limiter.longValue(), tunnel.getInNodeId());
+            if (limiterResult.getCode() != 0) {
+                return R.err("下发限速器失败:" + limiterResult.getMsg());
+            }
+        }
+
+        ForwardDto dto = new ForwardDto();
+        dto.setName(name);
+        dto.setTunnelId(src.getTunnelId());
+        dto.setRemoteAddr(src.getRemoteAddr());
+        dto.setStrategy(src.getStrategy());
+        dto.setInterfaceName(src.getInterfaceName());
+        dto.setSpeedId(limiter);
+        dto.setExpTime(expTime);
+
+        PortAllocation allocation = allocatePorts(tunnel, null);
+        if (allocation.isHasError()) {
+            return R.err(allocation.getErrorMessage() + suggestPortHint(tunnel));
+        }
+        Integer tryPort = allocation.getInPort();
+        R lastError = null;
+        for (int attempt = 0; attempt < MAX_PORT_RETRY && tryPort != null; attempt++) {
+            dto.setInPort(tryPort);
+            R result = createForwardForUser(dto, userId, user.getUser());
+            if (result.getCode() == 0) {
+                return result;
+            }
+            lastError = result;
+            String message = result.getMsg() == null ? "" : result.getMsg();
+            if (!isPortConflict(message)) {
+                return result;
+            }
+            tryPort = allocateInPortAfter(tunnel, tryPort);
+        }
+        return lastError != null ? lastError : R.err("没有可用端口。" + suggestPortHint(tunnel));
+    }
+
+    /** 写入/清空分配给车友的客户端链接。 */
+    @Override
+    public R setForwardClientLink(Long forwardId, String link) {
+        if (forwardId == null) {
+            return R.err("参数不完整");
+        }
+        Forward forward = this.getById(forwardId);
+        if (forward == null) {
+            return R.err("转发不存在");
+        }
+        String value = (link == null || link.trim().isEmpty()) ? null : link.trim();
+        if (value != null && !isValidClientLink(value)) {
+            return R.err("客户端链接格式无效或超出长度限制");
+        }
+        boolean updated = this.update(new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<Forward>()
+                .eq("id", forwardId)
+                .set("client_link", value)
+                .set("updated_time", System.currentTimeMillis()));
+        return updated ? R.ok() : R.err("客户端链接保存失败");
+    }
+
+    private static boolean isPortConflict(String message) {
+        return message.contains("already in use")
+                || message.contains("address already")
+                || message.contains("已被占用");
+    }
+
+    private static boolean isValidClientLink(String link) {
+        if (link.length() > 1024) {
+            return false;
+        }
+        for (int i = 0; i < link.length(); i++) {
+            char c = link.charAt(i);
+            if (Character.isISOControl(c) || Character.isWhitespace(c)) {
+                return false;
+            }
+        }
+        try {
+            URI uri = new URI(link);
+            String scheme = uri.getScheme();
+            if (scheme == null) {
+                return false;
+            }
+            String schemePrefix = scheme + "://";
+            if (!link.regionMatches(true, 0, schemePrefix, 0, schemePrefix.length())) {
+                return false;
+            }
+            String schemeSpecificPart = uri.getSchemeSpecificPart();
+            if (schemeSpecificPart == null || schemeSpecificPart.length() <= 2) {
+                return false;
+            }
+            switch (scheme.toLowerCase(Locale.ROOT)) {
+                case "vless":
+                case "vmess":
+                case "trojan":
+                case "ss":
+                case "hysteria2":
+                case "hy2":
+                case "tuic":
+                case "anytls":
+                case "socks":
+                case "socks5":
+                    return true;
+                default:
+                    return false;
+            }
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     @Override
     public R getAllForwards() {
         UserInfo currentUser = getCurrentUserInfo();
@@ -214,7 +368,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
     /** 协议转发命名固定 inbound-{入站id}-user-{用户id},隧道固定 inbound-tunnel-node{节点id} */
     private static boolean isProtocolManaged(String forwardName, String tunnelName) {
-        if (forwardName != null && forwardName.matches("^inbound-\\d+-user-\\d+$")) {
+        if (forwardName != null && forwardName.matches("^(inbound|fwd)-\\d+-user-\\d+$")) {
             return true;
         }
         return tunnelName != null && tunnelName.startsWith("inbound-tunnel-node");
