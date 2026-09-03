@@ -1,6 +1,12 @@
 # TMS 面板生产 Compose（默认 IPv4）
 # 只拉取 GitHub Container Registry 的预构建镜像，不在 VPS 上构建前后端。
-# 首次使用请先复制 .env.example 为 .env 并填写密码和 JWT_SECRET。
+# 首次使用请先填写下面的数据库密码和 JWT 密钥。
+
+x-tms-config:
+  db-name: &tms-db-name "gost" # TMS_DB_NAME
+  db-user: &tms-db-user "gost" # TMS_DB_USER
+  db-password: &tms-db-password "" # TMS_DB_PASSWORD
+  jwt-secret: &tms-jwt-secret "" # TMS_JWT_SECRET
 
 services:
   mysql:
@@ -8,10 +14,11 @@ services:
     container_name: gost-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
-      MYSQL_DATABASE: ${DB_NAME:?DB_NAME is required}
-      MYSQL_USER: ${DB_USER:?DB_USER is required}
-      MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      MYSQL_ROOT_PASSWORD: *tms-db-password
+      MYSQL_DATABASE: *tms-db-name
+      MYSQL_USER: *tms-db-user
+      MYSQL_PASSWORD: *tms-db-password
+      MYSQL_PWD: *tms-db-password
       TZ: Asia/Shanghai
     volumes:
       - ./data/mysql:/var/lib/mysql
@@ -25,7 +32,7 @@ services:
     networks:
       - gost-network
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "--silent"]
       interval: 10s
       timeout: 10s
       retries: 12
@@ -37,14 +44,14 @@ services:
     restart: unless-stopped
     environment:
       DB_HOST: mysql
-      DB_NAME: ${DB_NAME:?DB_NAME is required}
-      DB_USER: ${DB_USER:?DB_USER is required}
-      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      DB_NAME: *tms-db-name
+      DB_USER: *tms-db-user
+      DB_PASSWORD: *tms-db-password
+      JWT_SECRET: *tms-jwt-secret
       LOG_DIR: /app/logs
       JAVA_OPTS: "-Xms256m -Xmx512m -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
     ports:
-      - "${BACKEND_PORT:-6365}:6365"
+      - "6365:6365" # TMS_BACKEND_PORT
     volumes:
       - ./logs/backend:/app/logs
     depends_on:
@@ -64,7 +71,7 @@ services:
     container_name: vite-frontend
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-6366}:80"
+      - "6366:80" # TMS_FRONTEND_PORT
     depends_on:
       backend:
         condition: service_healthy

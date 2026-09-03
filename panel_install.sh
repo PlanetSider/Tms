@@ -561,6 +561,49 @@ get_config_params() {
   fi
 }
 
+# 生产 Compose 不再从 .env 插值。安装/升级脚本把随机凭据和实际端口直接写入
+# 下载后的 Compose，同时继续保留 .env 供维护命令读取旧配置。
+escape_yaml_double_quoted_for_sed() {
+  printf '%s' "$1" \
+    | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
+    | sed -e 's/[\\&|]/\\&/g'
+}
+
+render_compose_config() {
+  local compose_file="$1"
+  local marker rendered_file
+  local db_name db_user db_password jwt_secret
+
+  for marker in TMS_DB_NAME TMS_DB_USER TMS_DB_PASSWORD TMS_JWT_SECRET \
+                TMS_BACKEND_PORT TMS_FRONTEND_PORT; do
+    if ! grep -q "# ${marker}" "$compose_file"; then
+      echo "❌ Compose 模板缺少配置标记: ${marker}"
+      return 1
+    fi
+  done
+
+  db_name="$(escape_yaml_double_quoted_for_sed "$DB_NAME")"
+  db_user="$(escape_yaml_double_quoted_for_sed "$DB_USER")"
+  db_password="$(escape_yaml_double_quoted_for_sed "$DB_PASSWORD")"
+  jwt_secret="$(escape_yaml_double_quoted_for_sed "$JWT_SECRET")"
+  rendered_file="${compose_file}.rendered"
+
+  if ! sed \
+      -e "s|^  db-name: .*# TMS_DB_NAME|  db-name: \&tms-db-name \"${db_name}\" # TMS_DB_NAME|" \
+      -e "s|^  db-user: .*# TMS_DB_USER|  db-user: \&tms-db-user \"${db_user}\" # TMS_DB_USER|" \
+      -e "s|^  db-password: .*# TMS_DB_PASSWORD|  db-password: \&tms-db-password \"${db_password}\" # TMS_DB_PASSWORD|" \
+      -e "s|^  jwt-secret: .*# TMS_JWT_SECRET|  jwt-secret: \&tms-jwt-secret \"${jwt_secret}\" # TMS_JWT_SECRET|" \
+      -e "s|^      - \"[0-9][0-9]*:6365\" # TMS_BACKEND_PORT|      - \"${BACKEND_PORT}:6365\" # TMS_BACKEND_PORT|" \
+      -e "s|^      - \"[0-9][0-9]*:80\" # TMS_FRONTEND_PORT|      - \"${FRONTEND_PORT}:80\" # TMS_FRONTEND_PORT|" \
+      "$compose_file" > "$rendered_file"; then
+    rm -f "$rendered_file"
+    echo "❌ 写入 Compose 配置失败"
+    return 1
+  fi
+
+  mv -f "$rendered_file" "$compose_file"
+}
+
 # 安装功能
 install_panel() {
   echo "🚀 开始安装面板..."
@@ -580,6 +623,10 @@ install_panel() {
       || ! grep -q "services:" docker-compose.yml.new; then
     rm -f docker-compose.yml.new
     echo "❌ 配置文件下载失败或内容不对(可能下到了错误页),请检查网络后重试"
+    exit 1
+  fi
+  if ! render_compose_config docker-compose.yml.new; then
+    rm -f docker-compose.yml.new
     exit 1
   fi
   if [[ ! -f "gost.sql" ]]; then
@@ -706,7 +753,9 @@ update_panel() {
   # 先下到临时文件并校验,确认是正经 compose 再覆盖:
   # 直接 curl -o docker-compose.yml 的话,一旦 404("Not Found" 9 字节)就把现有配置
   # 冲成垃圾,面板当场起不来、还回不去(踩过)。
-  if curl -fsSL -o docker-compose.yml.new "$DOCKER_COMPOSE_URL" && grep -q "services:" docker-compose.yml.new; then
+  if curl -fsSL -o docker-compose.yml.new "$DOCKER_COMPOSE_URL" \
+      && grep -q "services:" docker-compose.yml.new \
+      && render_compose_config docker-compose.yml.new; then
     if ! migrate_legacy_storage; then
       rm -f docker-compose.yml.new
       echo "❌ 保留原有 Compose 配置并终止更新"

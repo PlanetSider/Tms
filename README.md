@@ -82,9 +82,9 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 
 | 文件 | 场景 | 说明 |
 |---|---|---|
-| `docker-compose.yml` | 面板生产部署（默认） | IPv4 bridge、宿主机目录绑定，直接拉取 GHCR 预构建镜像 |
-| `docker-compose-v4.yml` | 面板生产部署 | 显式 IPv4 bridge、宿主机目录绑定 |
-| `docker-compose-v6.yml` | 面板生产部署 | 启用 Docker IPv6、宿主机目录绑定，需要 daemon 支持 IPv6；网段可用 `TMS_IPV6_SUBNET` 覆盖 |
+| `docker-compose.yml` | 面板生产部署（默认） | IPv4 bridge、配置直接写入文件、宿主机目录绑定，直接拉取 GHCR 预构建镜像 |
+| `docker-compose-v4.yml` | 面板生产部署 | 显式 IPv4 bridge、配置直接写入文件、宿主机目录绑定 |
+| `docker-compose-v6.yml` | 面板生产部署 | 启用 Docker IPv6、配置直接写入文件、宿主机目录绑定，需要 daemon 支持 IPv6；网段可用 `TMS_IPV6_SUBNET` 覆盖 |
 | `docker-compose-node.yml` | 节点生产部署 | Agent + GOST + sing-box 单镜像、`./data` 绑定、host network |
 | `docker-compose-hybrid.yml` | 源码测试/联调 | 本地构建前后端镜像、宿主机目录绑定，不作为生产升级入口 |
 
@@ -102,7 +102,7 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 
 - 面板机：Linux、Docker Engine、Docker Compose 插件，以及访问 GitHub Container Registry（GHCR）的网络。
 - 节点机：Linux、Docker Engine、Docker Compose 插件，支持 amd64 或 arm64；协议端口需要在主机防火墙和云安全组放行。
-- 面板默认使用 TCP `6365` 供节点连接，使用 TCP `6366` 提供网页访问；Compose 不会自动改端口，端口被占用时请修改 `.env` 中的 `BACKEND_PORT` 或 `FRONTEND_PORT`。
+- 面板默认使用 TCP `6365` 供节点连接，使用 TCP `6366` 提供网页访问；Compose 不会自动改端口，端口被占用时请修改所用 Compose 文件中带 `TMS_BACKEND_PORT` 或 `TMS_FRONTEND_PORT` 注释的端口映射。
 
 ### 2. 使用 Compose 安装面板
 
@@ -113,20 +113,20 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 ~~~bash
 mkdir -p /opt/tms-panel && cd /opt/tms-panel
 git clone https://github.com/PlanetSider/Tms.git .
-cp .env.example .env
 mkdir -p data/mysql logs/backend
 ~~~
 
-编辑 `.env`，至少修改 `DB_PASSWORD` 和 `JWT_SECRET`：
+编辑准备使用的 Compose 文件顶部配置，至少填写数据库密码和 JWT 密钥。默认使用 `docker-compose.yml`：
 
-~~~dotenv
-DB_NAME=gost
-DB_USER=gost
-DB_PASSWORD=换成随机强密码
-JWT_SECRET=换成随机长字符串
-FRONTEND_PORT=6366
-BACKEND_PORT=6365
+~~~yaml
+x-tms-config:
+  db-name: &tms-db-name "gost" # TMS_DB_NAME
+  db-user: &tms-db-user "gost" # TMS_DB_USER
+  db-password: &tms-db-password "换成随机强密码" # TMS_DB_PASSWORD
+  jwt-secret: &tms-jwt-secret "换成随机长字符串" # TMS_JWT_SECRET
 ~~~
+
+数据库密码和 JWT 密钥默认为空，未填写时 MySQL 或后端不会正常启动。端口直接写在 `backend`、`frontend` 服务的 `ports` 中，默认分别为 `6365`、`6366`。
 
 启动预构建镜像：
 
@@ -140,25 +140,23 @@ docker compose ps
 
 公开 GHCR 镜像无需登录即可拉取；如果仓库管理员将镜像设为私有，先使用拥有 `read:packages` 权限的 GitHub 账号执行 `docker login ghcr.io`，再运行 `docker compose pull`。
 
-如果不想完整 clone 仓库，也可以只下载 Compose、数据库和环境模板后启动：
+如果不想完整 clone 仓库，也可以只下载 Compose 和数据库文件；下载后同样先填写 Compose 顶部的密码和 JWT 密钥：
 
 ~~~bash
 mkdir -p /opt/tms-panel && cd /opt/tms-panel
 curl -fsSL https://raw.githubusercontent.com/PlanetSider/Tms/main/docker-compose.yml -o docker-compose.yml
 curl -fsSL https://raw.githubusercontent.com/PlanetSider/Tms/main/gost.sql -o gost.sql
-curl -fsSL https://raw.githubusercontent.com/PlanetSider/Tms/main/.env.example -o .env.example
-cp .env.example .env
 mkdir -p data/mysql logs/backend
 ~~~
 
-确实需要 Docker 内部 IPv6 时，下载或 clone `docker-compose-v6.yml`，使用同一个 `.env` 启动：
+确实需要 Docker 内部 IPv6 时，下载或 clone `docker-compose-v6.yml`，在该文件顶部填写同样的配置后启动：
 
 ~~~bash
-docker compose -f docker-compose-v6.yml --env-file .env pull
-docker compose -f docker-compose-v6.yml --env-file .env up -d
+docker compose -f docker-compose-v6.yml pull
+docker compose -f docker-compose-v6.yml up -d
 ~~~
 
-不要提交 `.env`，也不要把数据库密码、JWT 密钥和节点密钥发送到公开位置。
+v6 文件默认使用 `fd00:dead:beef::/48`；确实发生网段冲突时，可在 `.env` 中设置 `TMS_IPV6_SUBNET` 覆盖。不要提交写入真实密码或 JWT 密钥的 Compose 文件，也不要把数据库密码、JWT 密钥和节点密钥发送到公开位置。
 
 ### 3. 添加节点
 
@@ -204,7 +202,7 @@ docker compose down
 
 面板域名和节点连接域名是两项独立配置。
 
-纯 Compose 面板默认通过 `FRONTEND_PORT` 提供 HTTP。需要域名和 HTTPS 时，请在面板机前置配置 Caddy、Nginx 或云负载均衡，将域名反向代理到 `127.0.0.1:${FRONTEND_PORT}`，并放行 80、443 端口。反向代理配置不由默认 Compose 自动创建，原来的 IP 加端口入口仍可作为备用入口。
+纯 Compose 面板默认通过 TCP `6366` 提供 HTTP。需要域名和 HTTPS 时，请在面板机前置配置 Caddy、Nginx 或云负载均衡，将域名反向代理到 `127.0.0.1:6366`，并放行 80、443 端口。反向代理配置不由默认 Compose 自动创建，原来的 IP 加端口入口仍可作为备用入口。
 
 已经使用旧 `panel_install.sh` 部署的用户仍可通过 `tms domain DOMAIN` 管理脚本创建的 Caddy 配置；新 Compose 部署不要执行该命令。
 
@@ -221,7 +219,7 @@ docker compose up -d --force-recreate
 docker compose ps
 ~~~
 
-如果面板目录是通过 Git 克隆的，更新 Compose 文件可先执行 `git pull --ff-only`；只下载文件的部署方式请重新下载 `docker-compose.yml`、`.env.example` 和 `gost.sql`。旧脚本部署用户仍可使用 `tms update`，不要将该命令用于 Compose 部署。
+数据库密码和 JWT 密钥现在直接保存在 Compose 中。更新 Compose 模板前先备份当前文件，更新后把原来的 `x-tms-config` 值和端口映射填回，再执行 `docker compose up`；不要用空白模板覆盖正在运行的配置。只下载文件的部署方式还需同步更新 `gost.sql`。旧脚本部署用户仍可使用 `tms update`，脚本会自动保留原凭据和端口；不要将该命令用于手动 Compose 部署。
 
 更新节点：
 
