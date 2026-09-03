@@ -23,20 +23,12 @@ ENV LANGUAGE=en_US:en
 ENV LC_ALL=en_US.UTF-8
 
 RUN set -eux; \
-    for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do \
-        if [ -f "$source_file" ]; then \
-            sed -i \
-                -e 's|archive.ubuntu.com|mirrors.ustc.edu.cn|g' \
-                -e 's|security.ubuntu.com|mirrors.ustc.edu.cn|g' \
-                -e 's|deb.debian.org/debian|mirrors.ustc.edu.cn/debian|g' \
-                -e 's|security.debian.org/debian-security|mirrors.ustc.edu.cn/debian-security|g' \
-                "$source_file"; \
-        fi; \
-    done; \
-    apt-get update \
-    && apt-get install -y --no-install-recommends curl fontconfig fonts-dejavu \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    apt-get -o Acquire::Retries=3 update; \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+        curl \
+        fontconfig \
+        fonts-dejavu; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/target/*.jar app.jar
 EXPOSE 6365

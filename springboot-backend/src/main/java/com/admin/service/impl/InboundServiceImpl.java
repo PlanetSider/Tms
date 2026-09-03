@@ -313,7 +313,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     public R deleteInbound(Long id) {
         Inbound in = this.getById(id);
         if (in == null) {
-            return R.err("入站不存在");
+            // 删除接口保持幂等：目标已经不存在时，调用方期望的状态已经达成。
+            return R.ok("入站不存在,视为已删除");
         }
         List<InboundUser> users = inboundUserMapper.selectList(
                 new QueryWrapper<InboundUser>().eq("inbound_id", id));
