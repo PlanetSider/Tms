@@ -90,9 +90,9 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 
 生产 Compose 不声明 Docker named volume。IPv4 bridge 不指定固定网段，面板容器通过 Compose 内置 DNS 使用 `mysql`、`backend` 等服务名通信，Docker 自动分配的网络地址即可满足需求；不固定 `172.20.0.0/16` 可避免与宿主机 VPN、云网络或其他 Compose 项目冲突。v6 变体保留可覆盖的私有 IPv6 网段，因为部分 Docker daemon 在启用 IPv6 时必须显式提供地址池；如不需要容器内部 IPv6，直接使用默认 `docker-compose.yml`。
 
-### 旧裸机节点兼容
+### 裸机节点兼容
 
-旧节点仍可使用 `install.sh` 安装 GOST systemd 服务。Agent 读取旧配置文件；升级旧版节点时会停止旧的 `sing-box.service`，将协议服务交给 Agent 管理。已经运行的裸机节点不需要为了使用新面板而立即重装，新的生产节点建议直接使用 Compose。
+面板“转发机监控”中的安装命令使用 `install.sh` 安装 GOST systemd 服务，操作方式与上游一致，但脚本和节点程序从 `PlanetSider/Tms` Release 下载。Agent 读取旧配置文件；升级旧版节点时会停止旧的 `sing-box.service`，将协议服务交给 Agent 管理。已经运行的裸机节点不需要为了使用新面板而立即重装；需要容器化节点时仍可手动使用 `docker-compose-node.yml`。
 
 ## 部署使用方法
 
@@ -164,10 +164,10 @@ docker compose -f docker-compose-v6.yml --env-file .env up -d
 
 1. 登录面板，进入“转发机监控”并新增节点，填写节点 IP 或域名。
 2. 保存节点后点击“安装”，复制面板生成的完整命令。
-3. 在节点机执行该命令。命令会创建 `/opt/tms-node`，下载 `docker-compose-node.yml`，写入节点专属密钥，拉取节点镜像并启动容器。
+3. 在节点机执行该命令。命令会从本仓库 Release 下载 `install.sh`，写入节点专属的面板地址和密钥，并将节点 Agent 安装为 systemd 服务。
 4. 返回面板确认节点在线，再创建协议、线路或端口转发。
 
-节点命令包含 `TMS_PANEL_ADDR` 和 `TMS_NODE_SECRET`，不要手动改用其他节点的密钥。节点 Compose 的常用操作：
+安装命令包含面板地址和 `TMS_NODE_SECRET`，不要公开命令或改用其他节点的密钥。需要改用容器化节点时，可在节点机准备 `docker-compose-node.yml` 和 `.env`，其中填写 `TMS_PANEL_ADDR`、`TMS_NODE_SECRET`；常用操作如下：
 
 ~~~bash
 cd /opt/tms-node

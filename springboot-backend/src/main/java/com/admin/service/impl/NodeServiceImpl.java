@@ -380,27 +380,14 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         // 处理服务器地址，如果是IPv6需要添加方括号
         String processedServerAddr = processServerAddress(viteConfig.getValue());
 
-        // 节点使用独立的 Compose 项目，面板只下发公开 Compose 文件和该节点的密钥。
-        String composeUrl = "https://raw.githubusercontent.com/PlanetSider/Tms/main/docker-compose-node.yml";
+        // 与上游保持相同的一键安装方式，但从本仓库 Release 下载兼容版节点脚本。
+        String installUrl = "https://github.com/PlanetSider/Tms/releases/latest/download/install.sh";
         StringBuilder command = new StringBuilder();
-        command.append("mkdir -p /opt/tms-node && cd /opt/tms-node && ")
-               .append("if ! curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 ")
-               .append(shellQuote(composeUrl))
-               .append(" -o docker-compose.yml.new; then rm -f docker-compose.yml.new; echo '节点 Compose 下载失败，请检查 GitHub 网络后重试' >&2; exit 1; fi; ")
-               .append("if ! grep -q '^services:' docker-compose.yml.new; then rm -f docker-compose.yml.new; echo '节点 Compose 内容无效，请重新下载' >&2; exit 1; fi; ")
-               .append("if [ -f docker-compose.yml ] && grep -q 'node_data:/etc/gost' docker-compose.yml; then rm -f docker-compose.yml.new; echo '检测到旧版节点使用 node_data named volume，请先按 README 完成迁移，避免丢失节点配置' >&2; exit 1; fi; ")
-               .append("mv -f docker-compose.yml.new docker-compose.yml && mkdir -p data && ")
-               .append("printf '%s\\n' ")
-               .append(shellQuote("TMS_PANEL_ADDR=" + dotenvQuote(processedServerAddr))).append(" ")
-               .append(shellQuote("TMS_NODE_SECRET=" + dotenvQuote(node.getSecret())))
-               .append(" > .env && chmod 600 .env && ")
-               .append("if docker compose version >/dev/null 2>&1; then ")
-               .append("if ! docker compose pull; then echo '节点镜像拉取失败，请检查 GHCR 网络后重试' >&2; exit 1; fi; ")
-               .append("docker compose up -d --force-recreate; ")
-               .append("elif command -v docker-compose >/dev/null 2>&1; then ")
-               .append("if ! docker-compose pull; then echo '节点镜像拉取失败，请检查 GHCR 网络后重试' >&2; exit 1; fi; ")
-               .append("docker-compose up -d --force-recreate; ")
-               .append("else echo '未找到 Docker Compose，请先安装 Docker Engine 和 Docker Compose' >&2; exit 1; fi");
+        command.append("curl -L ")
+               .append(shellQuote(installUrl))
+               .append(" -o ./install.sh && chmod +x ./install.sh && ./install.sh")
+               .append(" -a ").append(shellQuote(processedServerAddr))
+               .append(" -s ").append(shellQuote(node.getSecret()));
 
         return R.ok(command.toString());
     }
@@ -413,19 +400,7 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         return "'" + value.replace("'", "'\"'\"'") + "'";
     }
 
-    /** 生成 Compose .env 的双引号字面量，避免 $, #、反斜杠等字符被 dotenv 语法重新解释。 */
-    private String dotenvQuote(String value) {
-        if (value == null) {
-            return "\"\"";
-        }
-        return "\""
-                + value.replace("\\", "\\\\")
-                       .replace("\"", "\\\"")
-                       .replace("$", "$$")
-                + "\"";
-    }
-
-    /** 安装命令通过 printf 生成 .env，换行会让一个值变成多行配置。 */
+    /** 安装命令会交给 shell 执行，拒绝包含换行的动态参数。 */
     private String validateInstallValue(String value, String fieldName) {
         if (value != null && (value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0)) {
             return fieldName + "不能包含换行符";

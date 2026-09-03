@@ -16,7 +16,7 @@
 - `docker-compose-v4.yml` / `docker-compose-v6.yml`：面板生产 Compose 变体。v4 是显式 IPv4 配置，v6 仅在明确需要 Docker 内部 IPv6 且 daemon 已启用 IPv6 时使用。
 - `docker-compose-node.yml`：独立节点 Compose，Agent 和 sing-box 共用 host network，配置持久化在节点目录的 `data/` 绑定目录。
 - `docker-compose-hybrid.yml`：从源码构建面板的测试/联调配置，不作为生产升级入口。
-- `panel_install.sh`：历史脚本部署的升级、状态查看、备份和卸载维护入口；新面板部署不得依赖该脚本。`install.sh`：旧版裸机节点兼容入口。
+- `panel_install.sh`：历史脚本部署的升级、状态查看、备份和卸载维护入口；新面板部署不得依赖该脚本。`install.sh`：面板生成的转发机一键安装命令及旧版裸机节点兼容入口。
 
 ## 部署与兼容约束
 
@@ -28,7 +28,7 @@
 - 面板 Compose 的 `BACKEND_PORT` 是节点连接面板的公网端口，IPv6 地址写入节点配置时必须使用 `[地址]:端口` 形式。
 - 节点 Compose 依赖 Linux、Docker Engine 和 Compose 插件（或兼容的 `docker-compose`）；使用 host network 时不要添加普通端口映射，并提醒用户检查云安全组和主机防火墙。
 - 节点首次启动从 `TMS_PANEL_ADDR`、`TMS_NODE_SECRET` 初始化 `/etc/gost/config.json`；重启时复用宿主机 `data/` 内配置。不要破坏裸机节点已有的 `config.json`、`gost.json`/`gost.yaml` 或 systemd 兼容路径。
-- `install.sh` 升级旧裸机节点时会停止旧的 `sing-box.service` 并交给 Agent 接管；修改 Agent 启停逻辑时必须同时验证这一迁移路径。
+- 面板“转发机监控”的安装按钮必须生成与上游相同形式的 `install.sh -a ... -s ...` 裸机一键命令，但下载地址使用 `PlanetSider/Tms` Release；`install.sh` 升级旧裸机节点时会停止旧的 `sing-box.service` 并交给 Agent 接管，修改 Agent 启停逻辑时必须同时验证这一迁移路径。
 - 协议自动转发使用 `inbound-tunnel-node{nodeId}` 专用隧道，不要重新复用用户手工创建的端口转发隧道。
 - 车友转发的 `client_link` 可能包含账号密码，会原文保存并进入通用“全部线路”订阅；接口校验和数据库迁移必须保持幂等。
 
