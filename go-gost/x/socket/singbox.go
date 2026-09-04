@@ -205,9 +205,9 @@ func ensureSelfCert() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	// 只使用 sing-box 各版本都支持的 domain 参数;部分版本没有 --months,
-	// 额外传入会让首次配置自签证书直接失败。证书写入持久化卷后不会重复生成。
-	out, err := exec.CommandContext(ctx, singboxExecPath(), "generate", "tls-keypair", "--domain", "www.bing.com").CombinedOutput()
+	// sing-box 1.13.x 要求 server_name 使用位置参数，不支持 --domain；--months
+	// 是可选有效期参数。证书写入持久化目录后不会重复生成，因此使用长期有效期。
+	out, err := exec.CommandContext(ctx, singboxExecPath(), "generate", "tls-keypair", "www.bing.com", "--months", "120").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("生成自签证书失败: %v, %s", err, string(out))
 	}
