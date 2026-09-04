@@ -232,6 +232,7 @@ export default function InboundPage() {
       <div className="grid gap-3 md:grid-cols-2">
         {machineNodes.map((n) => {
           const nodeInbounds = inbounds.filter((ib) => ib.nodeId === n.id && !ib.landingId);
+          const activeNodeInbounds = nodeInbounds.filter((ib) => ib.status === 1);
           const online = n.status === 1;
           const firstIp = n.ip ? String(n.ip).split(",")[0].trim() : (n.serverIp || "");
           return (
@@ -247,7 +248,7 @@ export default function InboundPage() {
                 {/* 节点在线 ≠ 协议可用:Agent 和 sing-box 是两个进程,sing-box 挂了
                     这里照样显示「在线」,但这台机上所有协议全都连不上。必须单独标出来 —— 
                     不然只会以为是协议参数配错了,往那个方向查很久都查不出来 */}
-                {online && n.singboxRunning === false && nodeInbounds.length > 0 && (
+                {online && n.singboxRunning === false && activeNodeInbounds.length > 0 && (
                   n.singboxInstalling ? (
                     <div className="rounded-lg border border-default-300 bg-default-100 px-3 py-2 space-y-1">
                       <div className="text-sm font-medium text-default-600">⏳ 节点正在准备 sing-box,请稍候…</div>
@@ -262,7 +263,7 @@ export default function InboundPage() {
                         节点报的原因:<code className="font-mono">{n.singboxInstallErr}</code>
                       </div>
                       <div className="text-xs text-default-500">
-                        多半是节点镜像拉取或网络失败。到节点机执行 Compose 安装命令并查看容器日志(见 README)。
+                        裸机节点执行 <code className="font-mono">journalctl -u gost -n 200 --no-pager</code>；Docker 节点查看 node 容器日志。
                       </div>
                     </div>
                   ) : (
@@ -270,17 +271,14 @@ export default function InboundPage() {
                       <div className="text-sm font-semibold text-danger">⚠️ sing-box 未运行,这台机的协议全部不可用</div>
                       {n.singboxInstalled === false ? (
                         <div className="text-xs text-default-500">
-                          这台机上<span className="text-danger font-medium">根本没装 sing-box</span>，通常是节点镜像没有更新成功或
-                          节点容器没有正确启动。到这台机上执行 Compose 安装命令即可，容器恢复后面板会自动把协议配置推下去，
-                          不用重新分配。
+                          这台机上<span className="text-danger font-medium">尚未安装 sing-box</span>。裸机节点重启
+                          <code className="font-mono mx-1">gost.service</code>并查看日志；Docker 节点更新并重建 node 容器。
                         </div>
                       ) : (
                         <div className="text-xs text-default-500">
-                          节点本身在线(Agent 正常),但跑协议的 sing-box 没起来。到这台机上执行:
-                          <code className="font-mono bg-default-200 px-1 rounded ml-1">cd /opt/tms-node && docker compose up -d</code>
-                          <div className="mt-1">
-                            仍未恢复时执行 <code className="font-mono">docker compose logs -f node</code> 查看具体原因。
-                          </div>
+                          节点本身在线，但 sing-box 没有运行。裸机节点执行
+                          <code className="font-mono mx-1">systemctl restart gost</code>；Docker 节点执行
+                          <code className="font-mono ml-1">docker compose up -d</code>。
                         </div>
                       )}
                     </div>

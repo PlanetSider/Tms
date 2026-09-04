@@ -26,6 +26,9 @@ public interface InboundService extends IService<Inbound> {
     /** 入站列表 */
     R getInbounds();
 
+    /** 节点重连且 sing-box 未运行时，按数据库中的启用协议异步补发完整配置。 */
+    void syncNodeSingbox(Long nodeId);
+
     /** 删除入站(连带其用户的 gost 转发 + 重推配置) */
     R deleteInbound(Long id);
 

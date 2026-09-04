@@ -5,6 +5,7 @@ import com.admin.common.dto.GostConfigDto;
 import com.admin.common.dto.GostDto;
 import com.admin.common.task.CheckGostConfigAsync;
 import com.admin.entity.Node;
+import com.admin.service.InboundService;
 import com.admin.service.NodeService;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
@@ -31,6 +32,9 @@ public class WebSocketServer extends TextWebSocketHandler {
 
     @Resource
     NodeService nodeService;
+
+    @Resource
+    InboundService inboundService;
 
     // 存储所有活跃的 WebSocket 连接（
     private static final CopyOnWriteArraySet<WebSocketSession> activeSessions = new CopyOnWriteArraySet<>();
@@ -218,6 +222,7 @@ public class WebSocketServer extends TextWebSocketHandler {
                 if (Objects.equals(type, "1")) {
                     Long nodeId = Long.valueOf(id);
                     boolean shouldBroadcast = false;
+                    boolean shouldSyncSingbox = false;
                     // 会话替换可能发生在解密期间。状态写入和最终身份检查必须在
                     // 同一节点锁内完成，避免旧连接的迟到上报覆盖新连接状态。
                     synchronized (nodeSessionLock(nodeId)) {
@@ -246,7 +251,13 @@ public class WebSocketServer extends TextWebSocketHandler {
                                 }
                             }
                             if (info != null && info.containsKey("singbox_running")) {
-                                singboxRunning.put(nodeId, info.getBooleanValue("singbox_running"));
+                                boolean running = info.getBooleanValue("singbox_running");
+                                singboxRunning.put(nodeId, running);
+                                if (!running && !Boolean.TRUE.equals(
+                                        session.getAttributes().get("singboxSyncScheduled"))) {
+                                    session.getAttributes().put("singboxSyncScheduled", true);
+                                    shouldSyncSingbox = true;
+                                }
                             }
                         } catch (Exception ignored) {
                             // 上报格式不对不影响广播,忽略
@@ -261,6 +272,9 @@ public class WebSocketServer extends TextWebSocketHandler {
                     }
                     if (!shouldBroadcast) {
                         return;
+                    }
+                    if (shouldSyncSingbox) {
+                        inboundService.syncNodeSingbox(nodeId);
                     }
                     JSONObject jsonObject = new JSONObject();
                     jsonObject.put("id", id);

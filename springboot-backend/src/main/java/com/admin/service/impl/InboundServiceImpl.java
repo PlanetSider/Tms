@@ -31,6 +31,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -90,6 +91,26 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             return push;
         }
         return R.ok(created);
+    }
+
+    @Async
+    @Override
+    public void syncNodeSingbox(Long nodeId) {
+        if (nodeId == null) {
+            return;
+        }
+        long activeCount = this.count(new QueryWrapper<Inbound>()
+                .eq("node_id", nodeId)
+                .eq("status", 1));
+        if (activeCount == 0) {
+            return;
+        }
+        R result = pushNodeSingbox(nodeId);
+        if (result.getCode() == 0) {
+            log.info("节点 {} 重连后已自动同步 sing-box 配置", nodeId);
+        } else {
+            log.warn("节点 {} 重连后自动同步 sing-box 配置失败: {}", nodeId, result.getMsg());
+        }
     }
 
     /**
