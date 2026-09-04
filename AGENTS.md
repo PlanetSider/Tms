@@ -11,7 +11,7 @@
 - `springboot-backend/`：Spring Boot 面板后端、协议/中转/转发管理、WebSocket 节点控制和数据库迁移。
 - `vite-frontend/`：Vite + React + TypeScript 管理面板和车友订阅页面。
 - `go-gost/`：节点 Agent 与 GOST 运行时；容器镜像同时内置 sing-box。
-- `.env.example`：面板 Compose 环境变量模板；复制为 `.env` 后填写数据库密码和 JWT 密钥，不得提交真实 `.env`。
+- `.env.example`：生产面板仅用于覆盖 v6 Compose 的 IPv6 私有网段；数据库、JWT 和端口直接配置在生产 Compose 文件中，不得提交写入真实密钥的文件。
 - `docker-compose.yml`：面板生产 Compose 默认入口，IPv4 bridge，直接拉取 GHCR 预构建镜像，不在 VPS 上构建前后端。
 - `docker-compose-v4.yml` / `docker-compose-v6.yml`：面板生产 Compose 变体。v4 是显式 IPv4 配置，v6 仅在明确需要 Docker 内部 IPv6 且 daemon 已启用 IPv6 时使用。
 - `docker-compose-node.yml`：独立节点 Compose，Agent 和 sing-box 共用 host network，配置持久化在节点目录的 `data/` 绑定目录。
@@ -20,7 +20,8 @@
 
 ## 部署与兼容约束
 
-- 面板由 MySQL、后端和前端三个容器组成。数据库绑定到面板目录的 `data/mysql/`，后端日志绑定到 `logs/backend/`；升级和重复执行安装不得删除这些宿主机目录。
+- 面板由 MySQL 8.0、后端和前端三个容器组成，支持 AMD64 和 ARM64。数据库绑定到面板目录的 `data/mysql/`，后端日志绑定到 `logs/backend/`；升级和重复执行安装不得删除这些宿主机目录。
+- 历史 MySQL 5.7 数据目录升级到 8.0 前必须先导出 SQL 备份；8.0 完成数据字典升级后不能直接降回 5.7。`panel_install.sh` 检测到运行中的 5.7 时必须先备份，备份失败则终止升级。
 - 生产面板 Compose 必须使用 GHCR 的预构建镜像，不能把 `build:` 或本地源码编译带入默认部署路径；`docker-compose-hybrid.yml` 仅用于测试/联调。
 - `docker-compose.yml`、`docker-compose-v4.yml`、`docker-compose-v6.yml` 与 `.env.example` 的服务名、变量名、端口和绑定目录定义必须同步维护；修改默认部署变量时同时更新 README 和模板。
 - 生产 Compose 使用宿主机绑定目录，不声明 named volume；IPv4 bridge 网络不要硬编码 `subnet`，依赖 Compose 服务名 DNS 和 Docker 自动地址分配，避免网段冲突。仅 v6 变体可通过 `TMS_IPV6_SUBNET` 指定私有 IPv6 网段，以适配未配置 IPv6 地址池的 Docker daemon。

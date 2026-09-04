@@ -66,7 +66,7 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 | `backend` | Spring Boot API、WebSocket 和定时任务 | `6365` |
 | `frontend` | 管理页面和订阅页面 | `6366` |
 
-后端等待 MySQL 健康后启动，前端等待后端健康后启动。MySQL 数据直接绑定到 `./data/mysql/`，后端日志绑定到 `./logs/backend/`；更新和重复执行 Compose 不会删除这些宿主机目录。
+后端等待 MySQL 健康后启动，前端等待后端健康后启动。面板使用同时支持 AMD64 和 ARM64 的 MySQL 8.0。MySQL 数据直接绑定到 `./data/mysql/`，后端日志绑定到 `./logs/backend/`；更新和重复执行 Compose 不会删除这些宿主机目录。
 
 ### 节点使用单镜像和 host network
 
@@ -209,6 +209,16 @@ docker compose down
 给节点配置连接域名：在“转发机”编辑页面填写“连接域名”，订阅中的节点地址会优先使用该域名。域名只是替换显示的地址，DNS 解析仍可能暴露节点 IP；VLESS/Trojan Reality、Hysteria2 和 TUIC 也不适合通过普通 CDN 代理。
 
 ### 6. 更新和故障处理
+
+从旧版 `mysql:5.7` 首次升级到 `mysql:8.0` 前，必须先导出 SQL 备份：
+
+~~~bash
+cd /opt/tms-panel
+docker exec gost-mysql sh -c 'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers --all-databases' > mysql-5.7-before-8.0.sql
+test -s mysql-5.7-before-8.0.sql
+~~~
+
+确认备份文件非空后再更新。MySQL 8.0 首次启动会原地升级 `./data/mysql/` 中的数据字典，耗时可能比普通重启长；升级完成后不能直接把镜像改回 5.7，如需回退必须使用升级前备份恢复。历史 `panel_install.sh` 部署用户执行 `tms update` 时，脚本会在检测到运行中的 MySQL 5.7 后自动导出备份，备份失败则终止升级。
 
 更新面板（Compose 部署）：
 

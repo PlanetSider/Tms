@@ -10,7 +10,8 @@ x-tms-config:
 
 services:
   mysql:
-    image: mysql:5.7
+    # MySQL 8.0 官方镜像同时支持 AMD64 和 ARM64；从 5.7 升级前请先备份 ./data/mysql。
+    image: mysql:8.0
     container_name: gost-mysql
     restart: unless-stopped
     environment:
@@ -35,8 +36,8 @@ services:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "--silent"]
       interval: 10s
       timeout: 10s
-      retries: 12
-      start_period: 30s
+      retries: 30
+      start_period: 60s
 
   backend:
     image: ghcr.io/planetsider/springboot-backend:latest

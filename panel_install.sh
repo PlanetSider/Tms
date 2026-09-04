@@ -449,7 +449,7 @@ purge_panel() {
     docker volume ls -q 2>/dev/null       | grep -E '(^|_)(mysql_data|backend_logs|tms_caddy_data|tms_caddy_config)$'       | xargs -r docker volume rm 2>/dev/null || true
     docker network rm gost-network 2>/dev/null || true
     docker rmi -f ghcr.io/planetsider/springboot-backend:latest ghcr.io/planetsider/vite-frontend:latest \
-      ghcr.io/teminuosi/springboot-backend:latest ghcr.io/teminuosi/vite-frontend:latest mysql:5.7 2>/dev/null || true
+      ghcr.io/teminuosi/springboot-backend:latest ghcr.io/teminuosi/vite-frontend:latest mysql:8.0 mysql:5.7 2>/dev/null || true
     # 只清悬空镜像(不动其他应用),回收磁盘
     docker image prune -f 2>/dev/null || true
   fi
@@ -641,6 +641,22 @@ render_compose_config() {
   mv -f "$rendered_file" "$compose_file"
 }
 
+backup_mysql_57_before_upgrade() {
+  local current_image
+  current_image="$(docker inspect -f '{{.Config.Image}}' gost-mysql 2>/dev/null || true)"
+  case "$current_image" in
+    mysql:5.7|mysql:5.7.*|docker.io/library/mysql:5.7|docker.io/library/mysql:5.7.*) ;;
+    *) return 0 ;;
+  esac
+
+  echo "💾 检测到 MySQL 5.7，升级到 8.0 前自动导出数据库备份..."
+  if ! export_migration_sql; then
+    echo "❌ MySQL 5.7 备份失败，已终止升级；现有容器和数据目录未修改。"
+    return 1
+  fi
+  echo "✅ 升级前备份完成。MySQL 8.0 完成数据字典升级后不能直接降回 5.7。"
+}
+
 # 安装功能
 install_panel() {
   echo "🚀 开始安装面板..."
@@ -651,6 +667,9 @@ install_panel() {
     PRESERVE_EXISTING=1
   fi
   get_config_params
+  if [ "$PRESERVE_EXISTING" = "1" ] && ! backup_mysql_57_before_upgrade; then
+    exit 1
+  fi
 
   echo "[1/4] 下载配置文件..."
   DOCKER_COMPOSE_URL=$(get_docker_compose_url)
@@ -786,6 +805,10 @@ update_panel() {
   PRESERVE_EXISTING=0
   if [ -f ".env" ] && is_tms_compose; then
     PRESERVE_EXISTING=1
+  fi
+  get_config_params
+  if ! backup_mysql_57_before_upgrade; then
+    return 1
   fi
 
   echo "🔽 下载最新配置文件..."
