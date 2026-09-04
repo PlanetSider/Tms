@@ -62,4 +62,15 @@ public class NodeController extends BaseController {
         return nodeService.getInstallCommand(id);
     }
 
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/update-singbox")
+    public R updateSingbox(@RequestBody Map<String, Object> params) {
+        Object id = params.get("id");
+        if (id == null) {
+            return R.err("节点ID不能为空");
+        }
+        return nodeService.updateSingbox(Long.valueOf(id.toString()));
+    }
+
 }

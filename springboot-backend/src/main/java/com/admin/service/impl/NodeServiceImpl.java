@@ -15,6 +15,7 @@ import com.admin.mapper.InboundMapper;
 import com.admin.mapper.NodeMapper;
 import com.admin.mapper.TunnelMapper;
 import com.admin.service.NodeService;
+import com.admin.service.SingboxVersionService;
 import com.admin.service.TunnelService;
 import com.admin.service.ViteConfigService;
 import com.alibaba.fastjson.JSONObject;
@@ -82,6 +83,9 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
     private InboundMapper inboundMapper;
 
     @Resource
+    private SingboxVersionService singboxVersionService;
+
+    @Resource
     @Lazy
     private TunnelService tunnelService;
 
@@ -130,6 +134,11 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
             n.setSingboxInstalling(com.admin.common.utils.WebSocketServer.getSingboxInstalling(n.getId()));
             n.setSingboxInstallErr(com.admin.common.utils.WebSocketServer.getSingboxInstallErr(n.getId()));
             n.setSingboxExpected(nodesWithActiveInbounds.contains(n.getId()));
+            n.setSingboxUpdating(com.admin.common.utils.WebSocketServer.getSingboxUpdating(n.getId()));
+            n.setSingboxUpdateErr(com.admin.common.utils.WebSocketServer.getSingboxUpdateErr(n.getId()));
+            String reportedSingboxVersion = com.admin.common.utils.WebSocketServer.getSingboxVersion(n.getId());
+            singboxVersionService.decorateNode(n,
+                    reportedSingboxVersion != null ? reportedSingboxVersion : n.getSingboxVersion());
         }
         return R.ok(nodeList);
     }
@@ -373,6 +382,51 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
 
         // 2. 构建安装命令
         return buildInstallCommand(node);
+    }
+
+    @Override
+    public R updateSingbox(Long id) {
+        Node node = this.getById(id);
+        if (node == null) {
+            return R.err(ERROR_NODE_NOT_FOUND);
+        }
+        if (node.getStatus() == null || node.getStatus() != 1) {
+            return R.err("节点不在线");
+        }
+
+        String actualVersion = WebSocketServer.getSingboxVersion(id);
+        if (actualVersion == null) {
+            actualVersion = node.getSingboxVersion();
+        }
+        Node versionState = new Node();
+        singboxVersionService.decorateNode(versionState, actualVersion);
+        String status = versionState.getSingboxVersionStatus();
+        if ("current".equals(status)) {
+            return R.err("当前已是项目兼容版 " + versionState.getSingboxApprovedVersion());
+        }
+        if ("upstream_pending".equals(status)) {
+            return R.err("当前已是项目兼容版；上游新版本仍在适配验证中");
+        }
+        if ("incompatible".equals(status)) {
+            return R.err("节点版本高于项目兼容版，禁止自动降级");
+        }
+        if (!"update_required".equals(status)) {
+            return R.err("无法识别节点 sing-box 版本，请先更新 Agent 并等待状态上报");
+        }
+
+        GostDto result = WebSocketServer.send_msg(id,
+                singboxVersionService.buildCompatibleUpgradePayload(), "UpdateSingbox");
+        if (result == null || !"OK".equals(result.getMsg())) {
+            String message = result == null ? "节点无响应" : result.getMsg();
+            if (message != null && message.contains("未知命令类型")) {
+                message = "节点 Agent 不支持在线升级，请先使用安装脚本更新 Agent";
+            }
+            return R.err("启动协议升级失败: " + message);
+        }
+
+        JSONObject response = new JSONObject();
+        response.put("targetVersion", versionState.getSingboxApprovedVersion());
+        return R.ok(response);
     }
 
     /**

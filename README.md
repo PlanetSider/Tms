@@ -2,6 +2,16 @@
 
 TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。面板负责保存配置、用户权限、流量和到期信息，节点负责实际的 TCP/UDP 转发与 sing-box 协议服务。
 
+## 部署方式
+
+| 组件 | 部署方式 | 运行形式 |
+|---|---|---|
+| 面板 | `docker-compose.yml`、`docker-compose-v4.yml` 或 `docker-compose-v6.yml` | MySQL、后端和前端三个容器 |
+| 节点 | 面板“转发机监控”生成的一键安装命令 | `install.sh` 安装并由 systemd 管理 `gost.service` |
+| sing-box | 由节点 Agent 自动安装和升级 | Agent 子进程，不单独部署服务 |
+
+Docker Compose 只用于面板。仓库不提供节点 Compose 或节点容器镜像，所有新节点、已有节点和节点 Agent 更新都统一使用面板生成的一键命令。
+
 ## 引用来源
 
 本项目是在以下开源项目基础上的二次开发和集成：
@@ -9,11 +19,11 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 | 来源 | 用途 |
 |---|---|
 | [Teminuosi/Tms](https://github.com/Teminuosi/Tms) | 上游 TMS 面板实现、原有面板功能和协议管理逻辑 |
-| [PlanetSider/Tms](https://github.com/PlanetSider/Tms) | 本仓库维护的 Docker Compose 发行版本和部署脚本 |
+| [PlanetSider/Tms](https://github.com/PlanetSider/Tms) | 本仓库维护的面板 Compose、节点一键安装脚本和发布版本 |
 | [go-gost/gost](https://github.com/go-gost/gost) | TCP/UDP 转发、隧道、限速和流量统计 |
 | [go-gost/x](https://github.com/go-gost/x) | GOST 扩展服务、API、WebSocket 和配置能力 |
 | [SagerNet/sing-box](https://github.com/SagerNet/sing-box) | VLESS-Reality、Trojan-Reality、VMess、Shadowsocks-2022、Hysteria2、TUIC、AnyTLS 协议服务 |
-| [Docker Compose](https://docs.docker.com/compose/) | 面板和节点的容器编排与生命周期管理 |
+| [Docker Compose](https://docs.docker.com/compose/) | 面板的容器编排与生命周期管理 |
 
 上游项目和依赖项目分别遵循其原有许可证；本仓库的许可证见 [LICENSE](LICENSE)。
 
@@ -33,10 +43,10 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 
 ### 节点 Agent
 
-- Agent 支持通过 `TMS_PANEL_ADDR` 和 `TMS_NODE_SECRET` 自动初始化配置。
-- 保留旧裸机节点的 `config.json`、`gost.json`/`gost.yaml` 和 systemd 使用方式。
+- 所有节点均使用面板“转发机监控”生成的一键命令安装，安装脚本负责写入节点专属的面板地址和密钥。
+- Agent 保留已有的 `config.json`、`gost.json`/`gost.yaml`，并以 `gost.service` 方式运行。
 - Agent 负责 sing-box 的安装、配置、启动、停止、崩溃恢复和状态上报。
-- 节点重启或容器重建后会从持久化配置恢复，不需要重新在面板创建节点。
+- 节点重启后会从已有配置恢复，不需要重新在面板创建节点。
 - 支持 IPv4、IPv6 和带 `http/https/ws/wss` 协议的面板地址；IPv6 地址使用 `[地址]:端口` 格式。
 
 ### WebSocket 与后端
@@ -51,10 +61,10 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 
 - 新面板安装不依赖 `.sh`，直接使用 `docker-compose.yml` 拉取 GHCR 预构建镜像。
 - `panel_install.sh` 仅保留给已经使用脚本部署的面板做升级、备份和卸载；脚本不会在新部署主路径中使用。
-- `install.sh` 保留旧版裸机节点入口，并在升级时处理旧 `sing-box` systemd 服务与 Agent 的交接。
-- GitHub Actions 负责面板镜像、节点镜像和相关发布流程。
+- `install.sh` 是所有节点的统一安装和更新入口，并在升级时处理旧 `sing-box` systemd 服务与 Agent 的交接。
+- GitHub Actions 负责面板镜像、节点二进制和安装脚本的发布流程。
 
-## Compose 化的主要修改
+## 面板 Compose 的主要修改
 
 ### 面板由三个容器组成
 
@@ -68,16 +78,6 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 
 后端等待 MySQL 健康后启动，前端等待后端健康后启动。面板使用同时支持 AMD64 和 ARM64 的 MySQL 8.0。MySQL 数据直接绑定到 `./data/mysql/`，后端日志绑定到 `./logs/backend/`；更新和重复执行 Compose 不会删除这些宿主机目录。
 
-### 节点使用单镜像和 host network
-
-节点使用 `docker-compose-node.yml`，一个容器内同时运行 TMS Agent、GOST 和 sing-box：
-
-- 使用 `network_mode: host`，保留面板下发的 TCP、UDP 和端口转发行为，不需要在 Compose 中逐项映射端口。
-- 使用节点目录下的 `./data/` 绑定目录保存 `/etc/gost/config.json`、GOST 配置、sing-box 配置和证书。
-- 使用容器自带的 sing-box，不依赖宿主机安装 gost 或 sing-box 裸二进制。
-- 使用自动重启、进程健康检查、较大的文件描述符上限和转发所需的网络能力。
-- 节点镜像提供 amd64 和 arm64 架构；生产节点建议使用 Linux Docker Engine，Docker Desktop 的 host network 行为不等同于 Linux。
-
 ### Compose 文件
 
 | 文件 | 场景 | 说明 |
@@ -85,14 +85,15 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 | `docker-compose.yml` | 面板生产部署（默认） | IPv4 bridge、配置直接写入文件、宿主机目录绑定，直接拉取 GHCR 预构建镜像 |
 | `docker-compose-v4.yml` | 面板生产部署 | 显式 IPv4 bridge、配置直接写入文件、宿主机目录绑定 |
 | `docker-compose-v6.yml` | 面板生产部署 | 启用 Docker IPv6、配置直接写入文件、宿主机目录绑定，需要 daemon 支持 IPv6；网段可用 `TMS_IPV6_SUBNET` 覆盖 |
-| `docker-compose-node.yml` | 节点生产部署 | Agent + GOST + sing-box 单镜像、`./data` 绑定、host network |
 | `docker-compose-hybrid.yml` | 源码测试/联调 | 本地构建前后端镜像、宿主机目录绑定，不作为生产升级入口 |
 
 生产 Compose 不声明 Docker named volume。IPv4 bridge 不指定固定网段，面板容器通过 Compose 内置 DNS 使用 `mysql`、`backend` 等服务名通信，Docker 自动分配的网络地址即可满足需求；不固定 `172.20.0.0/16` 可避免与宿主机 VPN、云网络或其他 Compose 项目冲突。v6 变体保留可覆盖的私有 IPv6 网段，因为部分 Docker daemon 在启用 IPv6 时必须显式提供地址池；如不需要容器内部 IPv6，直接使用默认 `docker-compose.yml`。
 
-### 裸机节点兼容
+### 节点一键安装
 
-面板“转发机监控”中的安装命令使用 `install.sh` 安装 GOST systemd 服务，操作方式与上游一致，但脚本和节点程序从 `PlanetSider/Tms` Release 下载。Agent 读取旧配置文件；升级旧版节点时会停止旧的 `sing-box.service`，将协议服务交给 Agent 管理。已经运行的裸机节点不需要为了使用新面板而立即重装；需要容器化节点时仍可手动使用 `docker-compose-node.yml`。
+面板“转发机监控”中的安装命令使用 `install.sh` 安装 `gost.service`，脚本和节点程序从 `PlanetSider/Tms` Release 下载。所有新节点和已有节点均使用这一入口；重复执行节点专属命令会更新 Agent，并保留 GOST、sing-box 配置和证书。升级旧版节点时，脚本会停止旧的 `sing-box.service`，将协议服务交给 Agent 管理。
+
+历史上使用容器运行的节点，迁移前必须先停止旧节点容器，再执行该节点卡片中的“安装命令”。不要让旧容器和 `gost.service` 同时运行，否则可能出现节点重复连接、配置相互覆盖或协议端口被占用。
 
 ## 部署使用方法
 
@@ -101,7 +102,7 @@ TMS 是一个集中管理协议节点、端口转发和用户订阅的面板。�
 面板机和节点机可以是不同服务器。
 
 - 面板机：Linux、Docker Engine、Docker Compose 插件，以及访问 GitHub Container Registry（GHCR）的网络。
-- 节点机：Linux、Docker Engine、Docker Compose 插件，支持 amd64 或 arm64；协议端口需要在主机防火墙和云安全组放行。
+- 节点机：支持 systemd 的 Linux，架构为 amd64 或 arm64，并能访问 GitHub Release；协议端口需要在主机防火墙和云安全组放行。
 - 面板默认使用 TCP `6365` 供节点连接，使用 TCP `6366` 提供网页访问；Compose 不会自动改端口，端口被占用时请修改所用 Compose 文件中带 `TMS_BACKEND_PORT` 或 `TMS_FRONTEND_PORT` 注释的端口映射。
 
 ### 2. 使用 Compose 安装面板
@@ -161,24 +162,18 @@ v6 文件默认使用 `fd00:dead:beef::/48`；确实发生网段冲突时，可�
 ### 3. 添加节点
 
 1. 登录面板，进入“转发机监控”并新增节点，填写节点 IP 或域名。
-2. 保存节点后点击“安装”，复制面板生成的完整命令。
+2. 保存节点后点击“安装命令”，复制面板生成的完整命令。
 3. 在节点机执行该命令。命令会从本仓库 Release 下载 `install.sh`，写入节点专属的面板地址和密钥，并将节点 Agent 安装为 systemd 服务。
-4. 返回面板确认节点在线，再创建协议、线路或端口转发。
+4. 执行 `systemctl status gost --no-pager -l` 确认 `gost.service` 正常运行。
+5. 返回面板确认节点在线，再创建协议、线路或端口转发。
 
-节点刚安装且尚未创建任何协议时，sing-box 保持停止是正常状态；首次创建协议后，裸机 Agent 会自动准备 sing-box、接收配置并启动进程。只有节点存在启用中的协议但 sing-box 仍未运行时，面板才会显示故障提示。节点在配置下发期间断线时，后端会在其重连并上报未运行状态后自动补发完整配置。
+节点刚安装且尚未创建任何协议时，sing-box 保持停止是正常状态；首次创建协议后，Agent 会自动准备 sing-box、接收配置并启动进程。只有节点存在启用中的协议但 sing-box 仍未运行时，面板才会显示故障提示。节点在配置下发期间断线时，后端会在其重连并上报未运行状态后自动补发完整配置。
 
-安装命令包含面板地址和 `TMS_NODE_SECRET`，不要公开命令或改用其他节点的密钥。需要改用容器化节点时，可在节点机准备 `docker-compose-node.yml` 和 `.env`，其中填写 `TMS_PANEL_ADDR`、`TMS_NODE_SECRET`；常用操作如下：
+节点会随系统信息上报实际 sing-box 版本，面板后端每 6 小时统一检查一次 sing-box 上游 Latest Release。上游最新版与项目兼容版分开显示：只有经过项目配置兼容验证的版本才会成为兼容版，面板不会自动让节点跟随上游升级。协议管理中的紫色表示当前正常，橙色表示上游相关变化仍待适配，红色表示节点低于兼容版或运行了未经兼容验证的版本；颜色旁同时显示文字状态。
 
-~~~bash
-cd /opt/tms-node
-docker compose ps
-docker compose logs -f node
-docker compose pull
-docker compose up -d --force-recreate
-docker compose down
-~~~
+节点卡片的“升级协议”按钮位于“安装命令”和“编辑”之间。按钮会把在线节点升级到项目兼容版，下载官方归档后校验 SHA256，并在替换前使用新二进制检查现有配置；启动失败会自动恢复旧二进制。上游待适配、版本未知或版本高于兼容版时不会启用该按钮。
 
-节点使用 host network，因此 Compose 文件不写端口映射；仍需在节点机放行面板下发的协议端口和转发端口。
+安装命令包含面板地址和节点专属密钥，不要公开命令，也不要改用其他节点的安装命令。节点需要放行面板下发的协议端口和转发端口。
 
 ### 4. 配置协议和订阅
 
@@ -233,15 +228,9 @@ docker compose ps
 
 数据库密码和 JWT 密钥现在直接保存在 Compose 中。更新 Compose 模板前先备份当前文件，更新后把原来的 `x-tms-config` 值和端口映射填回，再执行 `docker compose up`；不要用空白模板覆盖正在运行的配置。只下载文件的部署方式还需同步更新 `gost.sql`。旧脚本部署用户仍可使用 `tms update`，脚本会自动保留原凭据和端口；不要将该命令用于手动 Compose 部署。
 
-更新节点：
+更新节点 Agent 时，在面板“转发机监控”重新复制该节点的“安装命令”，到节点机再次执行。更新不会删除 `/etc/gost/` 中已有的 GOST、sing-box 配置和证书。仅升级 sing-box 时，可直接使用节点卡片的“升级协议”按钮。
 
-~~~bash
-cd /opt/tms-node
-docker compose pull
-docker compose up -d --force-recreate
-~~~
-
-更新不会删除面板 `data/mysql/`、`logs/backend/` 或节点 `data/` 目录。面板后端启动时会自动执行幂等数据库迁移。
+更新面板不会删除 `data/mysql/` 或 `logs/backend/`。面板后端启动时会自动执行幂等数据库迁移。
 
 从旧版 named volume 部署升级时，先停止旧服务并迁移一次数据，再使用新的绑定目录。通过历史 `panel_install.sh update` 或重复安装时，脚本会自动完成面板两个 named volume 的迁移；直接替换 Compose 文件的用户按下面命令手动迁移：
 
@@ -254,26 +243,16 @@ docker run --rm -v backend_logs:/from:ro -v "$PWD/logs/backend":/to alpine sh -c
 docker compose up -d
 ~~~
 
-旧节点如果使用 `node_data` named volume，先记录实际卷名（`docker volume ls --format '{{.Name}}' | grep node_data`），再执行以下迁移；将示例中的 `旧节点卷名` 替换为查询结果：
-
-~~~bash
-cd /opt/tms-node
-docker compose down
-mkdir -p data
-docker run --rm -v 旧节点卷名:/from:ro -v "$PWD/data":/to alpine sh -c 'cp -a /from/. /to/'
-docker compose up -d
-~~~
-
 迁移完成并确认服务正常后，旧 named volume 可以手动删除。
 
-如果节点无法拉取 ghcr.io/planetsider/tms-node:latest，先为 Docker 配置可用的网络出口或镜像源，再重新执行上面的 pull 和 up。节点端可用以下命令定位问题：
+节点端可用以下命令查看运行状态和日志：
 
 ~~~bash
-docker compose ps
-docker compose logs --tail=200 node
+systemctl status gost --no-pager -l
+journalctl -u gost -n 200 --no-pager
 ~~~
 
-面板显示节点在线只代表 Agent 在线；如果 sing-box 未运行，该节点上的协议仍不可用，应优先检查节点镜像是否拉取成功以及容器日志。
+面板显示节点在线只代表 Agent 在线；如果 sing-box 未运行，该节点上的协议仍不可用，应优先查看 `gost.service` 日志中的下载、配置校验或启动错误。
 
 ### 7. 卸载
 
@@ -292,15 +271,15 @@ rm -rf data/mysql logs/backend
 
 旧脚本部署用户仍可使用 `tms purge`；该命令会连同脚本管理的资源一起清理。
 
-节点机执行 `docker compose down` 会保留 `data/`；确认要删除节点配置、证书和运行时数据时，再删除该目录：
+节点卸载请重新下载并运行 `install.sh`，在交互菜单中选择“卸载”：
 
 ~~~bash
-cd /opt/tms-node
-docker compose down
-rm -rf data
+curl -L https://github.com/PlanetSider/Tms/releases/latest/download/install.sh -o ./install.sh
+chmod +x ./install.sh
+./install.sh
 ~~~
 
-面板和节点是两个独立的 Compose 项目，卸载一方不会自动删除另一方。
+卸载会删除节点的 Agent、sing-box、配置和证书，请先确认不再需要该节点。面板中的节点记录需要在“转发机监控”中另行删除。
 
 ## 常用 Compose 管理命令
 

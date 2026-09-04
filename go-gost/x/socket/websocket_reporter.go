@@ -40,14 +40,17 @@ type SystemInfo struct {
 	SingboxRunning bool `json:"singbox_running"`
 
 	// SingboxInstalling / SingboxInstallErr 覆盖「正在装」和「装失败了为什么」。
-	// 兼容旧版节点首次准备二进制的短暂阶段；Compose 镜像默认已内置 sing-box。
+	// 节点首次准备二进制时会短暂进入该状态。
 	SingboxInstalling bool   `json:"singbox_installing"`
 	SingboxInstallErr string `json:"singbox_install_err,omitempty"`
 
 	// SingboxInstalled 区分「压根没装」和「装了但没跑」。
-	// 只报 running 的话,面板无法区分镜像未更新、容器未重建和进程异常退出,
-	// 这条状态让面板可以给出对应的 Compose 排查提示。
-	SingboxInstalled bool `json:"singbox_installed"`
+	// 只报 running 的话,面板无法区分尚未安装和进程异常退出。
+	SingboxInstalled bool   `json:"singbox_installed"`
+	// SingboxVersion 是节点实际安装的版本；面板统一决定项目兼容版和更新状态。
+	SingboxVersion   string `json:"singbox_version,omitempty"`
+	SingboxUpdating  bool   `json:"singbox_updating"`
+	SingboxUpdateErr string `json:"singbox_update_err,omitempty"`
 }
 
 // NetworkStats 网络统计信息
@@ -366,6 +369,9 @@ func (w *WebSocketReporter) collectSystemInfo() SystemInfo {
 		MemoryUsage:      memoryInfo.Usage,
 		SingboxRunning:    isSingboxRunning(),
 		SingboxInstalled:  isSingboxInstalled(),
+		SingboxVersion:    installedSingboxVersion(),
+		SingboxUpdating:   singboxUpdatingNow(),
+		SingboxUpdateErr:  singboxLastUpdateErr(),
 		SingboxInstalling: singboxInstallingNow(),
 		SingboxInstallErr: singboxLastInstallErr(),
 	}
@@ -378,6 +384,16 @@ func singboxInstallingNow() bool {
 
 func singboxLastInstallErr() string {
 	_, err := SingboxProgress()
+	return err
+}
+
+func singboxUpdatingNow() bool {
+	updating, _ := SingboxUpdateProgress()
+	return updating
+}
+
+func singboxLastUpdateErr() string {
+	_, err := SingboxUpdateProgress()
 	return err
 }
 
@@ -652,6 +668,9 @@ func (w *WebSocketReporter) routeCommand(conn *websocket.Conn, cmd CommandMessag
 	case "DeleteSingbox":
 		err = w.handleDeleteSingbox(cmd.Data)
 		response.Type = "DeleteSingboxResponse"
+	case "UpdateSingbox":
+		err = w.handleUpdateSingbox(cmd.Data)
+		response.Type = "UpdateSingboxResponse"
 	case "GenerateRealityKeypair":
 		var kp map[string]string
 		kp, err = w.handleGenerateRealityKeypair(cmd.Data)
@@ -1139,7 +1158,7 @@ func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls 
 	reporter.version = version
 	reporter.Start()
 
-	// Compose 容器重启后,从 /etc/gost 卷恢复已启用的协议配置；
+	// 节点重启后,从 /etc/gost 恢复已启用的协议配置；
 	// 新节点仍会预装二进制,但没有配置时不会启动 sing-box。
 	go prepareSingboxOnStart()
 

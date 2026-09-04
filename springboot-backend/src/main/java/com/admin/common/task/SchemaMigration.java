@@ -46,6 +46,8 @@ public class SchemaMigration implements ApplicationRunner {
                 "ALTER TABLE `node` ADD COLUMN `cert_path` VARCHAR(500) NULL COMMENT '有域名时证书路径'");
         addColumnIfMissing("node", "key_path",
                 "ALTER TABLE `node` ADD COLUMN `key_path` VARCHAR(500) NULL COMMENT '有域名时私钥路径'");
+        addColumnIfMissing("node", "singbox_version",
+                "ALTER TABLE `node` ADD COLUMN `singbox_version` VARCHAR(32) NULL COMMENT '节点最后上报的sing-box版本'");
 
         createHybridTables();
 

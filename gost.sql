@@ -68,6 +68,7 @@ CREATE TABLE `node` (
   `port_sta` int(10) NOT NULL,
   `port_end` int(10) NOT NULL,
   `version` varchar(100) DEFAULT NULL,
+  `singbox_version` varchar(32) DEFAULT NULL COMMENT '节点最后上报的sing-box版本',
   `http` int(10) NOT NULL DEFAULT '0',
   `tls` int(10) NOT NULL DEFAULT '0',
   `socks` int(10) NOT NULL DEFAULT '0',

@@ -1,6 +1,7 @@
 package com.admin.entity;
 
 import java.io.Serializable;
+import java.util.List;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
@@ -45,7 +46,7 @@ public class Node extends BaseEntity {
 
     /**
      * 这台机装没装 sing-box。null = 节点版本较老、没上报过这个字段。
-     * 裸机节点由 Agent 准备二进制，Compose 节点则由镜像预装；修复提示必须兼容两种部署。
+     * 所有节点均由 Agent 准备二进制。
      */
     @com.baomidou.mybatisplus.annotation.TableField(exist = false)
     private Boolean singboxInstalled;
@@ -54,7 +55,7 @@ public class Node extends BaseEntity {
     @com.baomidou.mybatisplus.annotation.TableField(exist = false)
     private Boolean singboxInstalling;
 
-    /** 上次安装失败的原因(节点上报)。有值时直接显示给车主,省得上机器翻容器日志 */
+    /** 上次安装失败的原因(节点上报)。有值时直接显示给车主,省得上机器翻系统日志 */
     @com.baomidou.mybatisplus.annotation.TableField(exist = false)
     private String singboxInstallErr;
 
@@ -64,6 +65,36 @@ public class Node extends BaseEntity {
      */
     @com.baomidou.mybatisplus.annotation.TableField(exist = false)
     private Boolean singboxExpected;
+
+    private String singboxVersion;
+
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private String singboxApprovedVersion;
+
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private String singboxUpstreamVersion;
+
+    /** current / upstream_pending / update_required / incompatible / unknown */
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private String singboxVersionStatus;
+
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private List<String> singboxAffectedProtocols;
+
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private String singboxUpdateSummary;
+
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private Boolean singboxVersionCheckFailed;
+
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private Long singboxVersionCheckedAt;
+
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private Boolean singboxUpdating;
+
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private String singboxUpdateErr;
 
     private String version;
 

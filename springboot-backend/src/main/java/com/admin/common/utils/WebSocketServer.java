@@ -64,6 +64,10 @@ public class WebSocketServer extends TextWebSocketHandler {
     private static final ConcurrentHashMap<Long, Boolean> singboxInstalling = new ConcurrentHashMap<>();
     /** 上次安装失败的原因,空表示没失败过 */
     private static final ConcurrentHashMap<Long, String> singboxInstallErr = new ConcurrentHashMap<>();
+    /** 节点实际安装的 sing-box 版本。项目兼容版和上游版由面板统一判断。 */
+    private static final ConcurrentHashMap<Long, String> singboxVersions = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Long, Boolean> singboxUpdating = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Long, String> singboxUpdateErr = new ConcurrentHashMap<>();
 
     /** 取某节点的 sing-box 运行状态;null 表示未知(该节点还没上报过) */
     public static Boolean getSingboxInstalled(Long nodeId) {
@@ -82,6 +86,18 @@ public class WebSocketServer extends TextWebSocketHandler {
         return nodeId == null ? null : singboxRunning.get(nodeId);
     }
 
+    public static String getSingboxVersion(Long nodeId) {
+        return nodeId == null ? null : singboxVersions.get(nodeId);
+    }
+
+    public static Boolean getSingboxUpdating(Long nodeId) {
+        return nodeId == null ? null : singboxUpdating.get(nodeId);
+    }
+
+    public static String getSingboxUpdateErr(Long nodeId) {
+        return nodeId == null ? null : singboxUpdateErr.get(nodeId);
+    }
+
     /** 节点连接失效后清掉实时 sing-box 状态,避免面板继续显示上一条连接的数据。 */
     private static void clearSingboxState(Long nodeId) {
         if (nodeId == null) {
@@ -91,6 +107,9 @@ public class WebSocketServer extends TextWebSocketHandler {
         singboxInstalled.remove(nodeId);
         singboxInstalling.remove(nodeId);
         singboxInstallErr.remove(nodeId);
+        singboxVersions.remove(nodeId);
+        singboxUpdating.remove(nodeId);
+        singboxUpdateErr.remove(nodeId);
     }
     
     // 为每个session提供锁对象，防止并发发送消息
@@ -257,6 +276,30 @@ public class WebSocketServer extends TextWebSocketHandler {
                                         session.getAttributes().get("singboxSyncScheduled"))) {
                                     session.getAttributes().put("singboxSyncScheduled", true);
                                     shouldSyncSingbox = true;
+                                }
+                            }
+                            if (info != null && info.containsKey("singbox_version")) {
+                                String actualVersion = info.getString("singbox_version");
+                                if (actualVersion != null && !actualVersion.trim().isEmpty()) {
+                                    actualVersion = actualVersion.trim();
+                                    String previousVersion = singboxVersions.put(nodeId, actualVersion);
+                                    if (!actualVersion.equals(previousVersion)) {
+                                        Node versionUpdate = new Node();
+                                        versionUpdate.setId(nodeId);
+                                        versionUpdate.setSingboxVersion(actualVersion);
+                                        nodeService.updateById(versionUpdate);
+                                    }
+                                }
+                            }
+                            if (info != null && info.containsKey("singbox_updating")) {
+                                singboxUpdating.put(nodeId, info.getBooleanValue("singbox_updating"));
+                            }
+                            if (info != null) {
+                                String updateErr = info.getString("singbox_update_err");
+                                if (updateErr != null && !updateErr.isEmpty()) {
+                                    singboxUpdateErr.put(nodeId, updateErr);
+                                } else {
+                                    singboxUpdateErr.remove(nodeId);
                                 }
                             }
                         } catch (Exception ignored) {

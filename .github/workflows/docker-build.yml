@@ -218,41 +218,9 @@ jobs:
             $TAGS \
             ./springboot-backend
 
-  build-node:
-    name: Build & Push TMS Node Image
-    needs: check-version
-    # 节点镜像包含 Agent 和 sing-box,每次 main 更新都刷新 latest。
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push node Docker image
-        run: |
-          VERSION="${{ needs.check-version.outputs.version }}"
-          TAGS="-t ghcr.io/planetsider/tms-node:latest"
-          if [ "${{ needs.check-version.outputs.should_build }}" = "true" ]; then
-            TAGS="$TAGS -t ghcr.io/planetsider/tms-node:${VERSION}"
-          fi
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --push \
-            $TAGS \
-            -f ./go-gost/Dockerfile \
-            ./go-gost
-
   create-release:
     name: Create Release and Tag
-    needs: [check-version, build-gost, build-vite, build-java, build-node]
+    needs: [check-version, build-gost, build-vite, build-java]
     if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -314,7 +282,6 @@ jobs:
           echo "📤 上传 Docker Compose 配置文件..."
           gh release upload "${VERSION}" ./docker-compose-v4.yml --clobber
           gh release upload "${VERSION}" ./docker-compose-v6.yml --clobber
-          gh release upload "${VERSION}" ./docker-compose-node.yml --clobber
           gh release upload "${VERSION}" ./docker-compose.yml --clobber
           gh release upload "${VERSION}" ./.env.example --clobber
           
@@ -366,7 +333,6 @@ jobs:
           gh release upload "${VERSION}" ./panel_install.sh --clobber
           gh release upload "${VERSION}" ./docker-compose-v4.yml --clobber
           gh release upload "${VERSION}" ./docker-compose-v6.yml --clobber
-          gh release upload "${VERSION}" ./docker-compose-node.yml --clobber
           gh release upload "${VERSION}" ./docker-compose.yml --clobber
           gh release upload "${VERSION}" ./.env.example --clobber
           gh release upload "${VERSION}" ./gost.sql --clobber
@@ -401,7 +367,6 @@ jobs:
           echo "📤 更新 Docker Compose 配置文件..."
           gh release upload "${VERSION}" ./docker-compose-v4.yml --clobber
           gh release upload "${VERSION}" ./docker-compose-v6.yml --clobber
-          gh release upload "${VERSION}" ./docker-compose-node.yml --clobber
           gh release upload "${VERSION}" ./docker-compose.yml --clobber
           gh release upload "${VERSION}" ./.env.example --clobber
           

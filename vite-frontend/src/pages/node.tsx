@@ -11,6 +11,7 @@ import { Alert } from "@heroui/alert";
 import { Progress } from "@heroui/progress";
 import toast from 'react-hot-toast';
 import { copyTextToClipboard } from "@/utils/clipboard";
+import { SingboxVersionBadge, type SingboxVersionFields } from "@/components/singbox-version-status";
 import axios from 'axios';
 
 
@@ -20,10 +21,11 @@ import {
   updateNode,
   deleteNode,
   getNodeInstallCommand,
+  updateNodeSingbox,
   updateConfig
 } from "@/api";
 
-interface Node {
+interface Node extends SingboxVersionFields {
   id: number;
   name: string;
   ip: string;
@@ -35,10 +37,12 @@ interface Node {
   singboxInstalled?: boolean;
   /** 正在准备 sing-box(刚建完协议那一两分钟)。这时候不该报红 */
   singboxInstalling?: boolean;
-  /** 上次安装失败的原因,有值就直接摆出来,省得上机器翻容器日志 */
+  /** 上次安装失败的原因,有值就直接摆出来,省得上机器翻系统日志 */
   singboxInstallErr?: string;
   /** 存在启用中的协议时才应运行；未配置协议时为 false */
   singboxExpected?: boolean;
+  singboxUpdating?: boolean;
+  singboxUpdateErr?: string;
   portSta: number;
   portEnd: number;
   version?: string;
@@ -57,7 +61,18 @@ interface Node {
     uptime: number;
   } | null;
   copyLoading?: boolean;
+  protocolUpgradeLoading?: boolean;
 }
+
+const protocolUpgradeDisabledReason = (node: Node): string => {
+  if (node.connectionStatus !== "online") return "节点离线";
+  if (node.singboxUpdating) return "协议核心正在升级";
+  if (node.singboxVersionStatus === "upstream_pending") return "上游版本尚未通过项目兼容验证";
+  if (node.singboxVersionStatus === "current") return "当前已是项目兼容版";
+  if (node.singboxVersionStatus === "incompatible") return "节点版本高于项目兼容版，不能自动降级";
+  if (node.singboxVersionStatus !== "update_required") return "尚未取得可升级的版本信息";
+  return "";
+};
 
 interface NodeForm {
   id: number | null;
@@ -106,6 +121,7 @@ export default function NodePage() {
   const websocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  const nodeMetadataKeysRef = useRef<Record<string, string>>({});
   const maxReconnectAttempts = 5;
 
   useEffect(() => {
@@ -127,7 +143,8 @@ export default function NodePage() {
           ...node,
           connectionStatus: node.status === 1 ? 'online' : 'offline',
           systemInfo: null,
-          copyLoading: false
+          copyLoading: false,
+          protocolUpgradeLoading: false,
         })));
       } else {
         toast.error(res.msg || '加载转发机列表失败');
@@ -136,6 +153,24 @@ export default function NodePage() {
       toast.error('网络错误，请重试');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const refreshNodeMetadata = async (nodeId: number) => {
+    try {
+      const res = await getNodeList();
+      if (res.code !== 0 || !Array.isArray(res.data)) return;
+      const fresh = res.data.find((item: any) => item.id === nodeId);
+      if (!fresh) return;
+      setNodeList(prev => prev.map(node => node.id === nodeId ? {
+        ...fresh,
+        connectionStatus: node.connectionStatus,
+        systemInfo: node.systemInfo,
+        copyLoading: node.copyLoading,
+        protocolUpgradeLoading: node.protocolUpgradeLoading,
+      } : node));
+    } catch {
+      // 实时元数据刷新失败不打断节点监控，下次心跳或手动刷新会重试。
     }
   };
 
@@ -212,19 +247,17 @@ export default function NodePage() {
         return node;
       }));
     } else if (type === 'info') {
+      let systemInfo: any;
+      try {
+        systemInfo = typeof messageData === 'string' ? JSON.parse(messageData) : messageData;
+      } catch {
+        return;
+      }
       setNodeList(prev => prev.map(node => {
         if (node.id == id) {
-          try {
-            let systemInfo;
-            if (typeof messageData === 'string') {
-              systemInfo = JSON.parse(messageData);
-            } else {
-              systemInfo = messageData;
-            }
-            
-            const currentUpload = parseInt(systemInfo.bytes_transmitted) || 0;
-            const currentDownload = parseInt(systemInfo.bytes_received) || 0;
-            const currentUptime = parseInt(systemInfo.uptime) || 0;
+          const currentUpload = parseInt(systemInfo.bytes_transmitted) || 0;
+          const currentDownload = parseInt(systemInfo.bytes_received) || 0;
+          const currentUptime = parseInt(systemInfo.uptime) || 0;
             
             let uploadSpeed = 0;
             let downloadSpeed = 0;
@@ -252,11 +285,11 @@ export default function NodePage() {
               }
             }
             
-            return {
-              ...node,
-              connectionStatus: 'online',
-              // 节点在系统信息里顺带上报 sing-box 状态,这里实时更新
-              singboxRunning: typeof systemInfo.singbox_running === 'boolean'
+          return {
+            ...node,
+            connectionStatus: 'online',
+            // 节点在系统信息里顺带上报 sing-box 状态,这里实时更新
+            singboxRunning: typeof systemInfo.singbox_running === 'boolean'
                 ? systemInfo.singbox_running
                 : node.singboxRunning,
               singboxInstalled: typeof systemInfo.singbox_installed === 'boolean'
@@ -270,7 +303,18 @@ export default function NodePage() {
                 : systemInfo.singbox_installed === true
                   ? undefined
                   : node.singboxInstallErr,
-              systemInfo: {
+              singboxVersion: typeof systemInfo.singbox_version === 'string' && systemInfo.singbox_version
+                ? systemInfo.singbox_version
+                : node.singboxVersion,
+              singboxUpdating: typeof systemInfo.singbox_updating === 'boolean'
+                ? systemInfo.singbox_updating
+                : node.singboxUpdating,
+              singboxUpdateErr: typeof systemInfo.singbox_update_err === 'string' && systemInfo.singbox_update_err
+                ? systemInfo.singbox_update_err
+                : systemInfo.singbox_updating === false
+                  ? undefined
+                  : node.singboxUpdateErr,
+            systemInfo: {
                 cpuUsage: parseFloat(systemInfo.cpu_usage) || 0,
                 memoryUsage: parseFloat(systemInfo.memory_usage) || 0,
                 uploadTraffic: currentUpload,
@@ -278,14 +322,20 @@ export default function NodePage() {
                 uploadSpeed: uploadSpeed,
                 downloadSpeed: downloadSpeed,
                 uptime: currentUptime
-              }
-            };
-          } catch (error) {
-            return node;
-          }
+            }
+          };
         }
         return node;
       }));
+      const metadataKey = [
+        systemInfo.singbox_version || "",
+        systemInfo.singbox_updating === true ? "1" : "0",
+        systemInfo.singbox_update_err || "",
+      ].join(":");
+      if (nodeMetadataKeysRef.current[String(id)] !== metadataKey) {
+        nodeMetadataKeysRef.current[String(id)] = metadataKey;
+        window.setTimeout(() => void refreshNodeMetadata(Number(id)), 250);
+      }
     }
   };
 
@@ -577,6 +627,37 @@ export default function NodePage() {
     }
   };
 
+  const handleProtocolUpgrade = async (node: Node) => {
+    const disabledReason = protocolUpgradeDisabledReason(node);
+    if (disabledReason) {
+      toast.error(disabledReason);
+      return;
+    }
+    const target = node.singboxApprovedVersion || "项目兼容版";
+    if (!window.confirm(`确定将「${node.name}」的 sing-box 升级到 ${target}？升级期间协议会短暂重启。`)) {
+      return;
+    }
+    setNodeList(prev => prev.map(item => item.id === node.id
+      ? { ...item, protocolUpgradeLoading: true }
+      : item));
+    try {
+      const res = await updateNodeSingbox(node.id);
+      if (res.code === 0) {
+        toast.success(`已开始升级到 ${res.data?.targetVersion || target}`);
+        window.setTimeout(() => void refreshNodeMetadata(node.id), 3_000);
+        window.setTimeout(() => void refreshNodeMetadata(node.id), 20_000);
+      } else {
+        toast.error(res.msg || "启动协议升级失败");
+      }
+    } catch {
+      toast.error("启动协议升级失败");
+    } finally {
+      setNodeList(prev => prev.map(item => item.id === node.id
+        ? { ...item, protocolUpgradeLoading: false }
+        : item));
+    }
+  };
+
   // 提交表单
   const handleSubmit = async () => {
     if (!validateForm()) return;
@@ -730,6 +811,12 @@ export default function NodePage() {
                 </CardHeader>
 
                 <CardBody className="pt-0 pb-3">
+                  {node.singboxUpdateErr && (
+                    <div className="mb-3 rounded-lg border border-danger/40 bg-danger/10 px-2.5 py-2">
+                      <div className="text-xs font-semibold text-danger">协议升级失败</div>
+                      <div className="mt-0.5 break-all text-[11px] text-default-500">{node.singboxUpdateErr}</div>
+                    </div>
+                  )}
                   {/* 「在线」只代表 Agent 活着。sing-box 是另一个进程,它挂了这里照样绿,
                       但那台机上的协议全都用不了 —— 必须单独标出来 */}
                   {node.connectionStatus === 'online' && node.singboxExpected === true && node.singboxRunning === false && (
@@ -748,11 +835,11 @@ export default function NodePage() {
                         <div className="text-[11px] text-default-500 mt-0.5 leading-relaxed">
                           {node.singboxInstallErr ? (
                             <>这台机上的协议全部不可用。节点报的原因:<code className="font-mono break-all">{node.singboxInstallErr}</code>
-                            。裸机节点查看 <code className="font-mono">journalctl -u gost -n 200 --no-pager</code>；Docker 节点查看容器日志。</>
+                            。请执行 <code className="font-mono">journalctl -u gost -n 200 --no-pager</code> 查看节点日志。</>
                           ) : node.singboxInstalled === false ? (
-                            <>这台机上的协议全部不可用。<span className="text-danger">sing-box 尚未安装</span>。裸机节点重启 <code className="font-mono">gost.service</code>；Docker 节点更新并重建 node 容器。</>
+                            <>这台机上的协议全部不可用。<span className="text-danger">sing-box 尚未安装</span>。请执行 <code className="font-mono">systemctl restart gost</code>，并查看节点日志。</>
                           ) : (
-                            <>这台机上的协议全部不可用。裸机节点执行 <code className="font-mono">systemctl restart gost</code>；Docker 节点执行 <code className="font-mono">docker compose up -d</code>。</>
+                            <>这台机上的协议全部不可用。请执行 <code className="font-mono">systemctl restart gost</code>；仍未恢复时查看节点日志。</>
                           )}
                         </div>
                       </div>
@@ -783,6 +870,10 @@ export default function NodePage() {
                     <div className="flex justify-between text-sm">
                       <span className="text-default-600">版本</span>
                       <span className="text-xs">{node.version || '未知'}</span>
+                    </div>
+                    <div className="flex justify-between items-center gap-2 text-sm">
+                      <span className="text-default-600 flex-shrink-0">sing-box</span>
+                      <SingboxVersionBadge node={node} />
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-default-600">开机时间</span>
@@ -886,23 +977,35 @@ export default function NodePage() {
 
                   {/* 操作按钮 */}
                   <div className="space-y-1.5">
-                    <div className="flex gap-1.5">
+                    <div className="grid grid-cols-4 gap-1.5">
                       <Button
                         size="sm"
                         variant="flat"
                         color="success"
                         onPress={() => handleCopyInstallCommand(node)}
                         isLoading={node.copyLoading}
-                        className="flex-1 min-h-8"
+                        className="min-w-0 min-h-8 px-1 text-xs"
                       >
                         安装命令
                       </Button>
                       <Button
                         size="sm"
                         variant="flat"
+                        color={node.singboxVersionStatus === "update_required" ? "warning" : "default"}
+                        onPress={() => handleProtocolUpgrade(node)}
+                        isLoading={node.protocolUpgradeLoading || node.singboxUpdating}
+                        isDisabled={Boolean(protocolUpgradeDisabledReason(node))}
+                        title={protocolUpgradeDisabledReason(node) || `升级到 ${node.singboxApprovedVersion}`}
+                        className="min-w-0 min-h-8 px-1 text-xs"
+                      >
+                        升级协议
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="flat"
                         color="primary"
                         onPress={() => handleEdit(node)}
-                        className="flex-1 min-h-8"
+                        className="min-w-0 min-h-8 px-1 text-xs"
                       >
                         编辑
                       </Button>
@@ -911,7 +1014,7 @@ export default function NodePage() {
                         variant="flat"
                         color="danger"
                         onPress={() => handleDelete(node)}
-                        className="flex-1 min-h-8"
+                        className="min-w-0 min-h-8 px-1 text-xs"
                       >
                         删除
                       </Button>

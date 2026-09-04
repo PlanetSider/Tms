@@ -23,6 +23,7 @@ import {
 import { copyTextToClipboard } from "@/utils/clipboard";
 import { SNI_PRESETS, DEFAULT_SNI, cleanSni } from "@/config/sni";
 import { SubQr } from "@/components/sub-qr";
+import { SingboxVersionBadge, protocolVersionVisual } from "@/components/singbox-version-status";
 
 /**
  * 协议管理(合体面板)· 机器卡模式。
@@ -244,6 +245,10 @@ export default function InboundPage() {
                   <Chip size="sm" variant="flat" color="primary" className="ml-auto">{nodeInbounds.length} 协议</Chip>
                 </div>
                 {firstIp && <div className="text-xs text-default-500 font-mono">{firstIp}</div>}
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="text-default-500">sing-box</span>
+                  <SingboxVersionBadge node={n} />
+                </div>
 
                 {/* 节点在线 ≠ 协议可用:Agent 和 sing-box 是两个进程,sing-box 挂了
                     这里照样显示「在线」,但这台机上所有协议全都连不上。必须单独标出来 —— 
@@ -263,7 +268,7 @@ export default function InboundPage() {
                         节点报的原因:<code className="font-mono">{n.singboxInstallErr}</code>
                       </div>
                       <div className="text-xs text-default-500">
-                        裸机节点执行 <code className="font-mono">journalctl -u gost -n 200 --no-pager</code>；Docker 节点查看 node 容器日志。
+                        请执行 <code className="font-mono">journalctl -u gost -n 200 --no-pager</code> 查看节点日志。
                       </div>
                     </div>
                   ) : (
@@ -271,23 +276,27 @@ export default function InboundPage() {
                       <div className="text-sm font-semibold text-danger">⚠️ sing-box 未运行,这台机的协议全部不可用</div>
                       {n.singboxInstalled === false ? (
                         <div className="text-xs text-default-500">
-                          这台机上<span className="text-danger font-medium">尚未安装 sing-box</span>。裸机节点重启
-                          <code className="font-mono mx-1">gost.service</code>并查看日志；Docker 节点更新并重建 node 容器。
+                          这台机上<span className="text-danger font-medium">尚未安装 sing-box</span>。请执行
+                          <code className="font-mono mx-1">systemctl restart gost</code>并查看节点日志。
                         </div>
                       ) : (
                         <div className="text-xs text-default-500">
-                          节点本身在线，但 sing-box 没有运行。裸机节点执行
-                          <code className="font-mono mx-1">systemctl restart gost</code>；Docker 节点执行
-                          <code className="font-mono ml-1">docker compose up -d</code>。
+                          节点本身在线，但 sing-box 没有运行。请执行
+                          <code className="font-mono mx-1">systemctl restart gost</code>；仍未恢复时查看节点日志。
                         </div>
                       )}
                     </div>
                   )
                 )}
                 <div className="flex flex-wrap gap-1">
-                  {nodeInbounds.map((ib) => (
-                    <Chip key={ib.id} size="sm" variant="flat" color="secondary">{protoLabel(ib.protocol)}</Chip>
-                  ))}
+                  {nodeInbounds.map((ib) => {
+                    const versionVisual = protocolVersionVisual(n, ib.protocol);
+                    return (
+                      <Chip key={ib.id} size="sm" variant="flat" color={versionVisual.color}>
+                        {protoLabel(ib.protocol)}{versionVisual.label ? ` · ${versionVisual.label}` : ""}
+                      </Chip>
+                    );
+                  })}
                 </div>
                 <div className="text-xs text-default-400">
                   整机一条订阅:分配给车友后,一条订阅链接导入客户端即拿到上面全部协议,以后加新协议自动更新。

@@ -2,7 +2,7 @@ package socket
 
 // 合体面板(协议+限速)· 节点端 sing-box 管理模块
 // 面板通过 WebSocket 下发 SetSingboxConfig 命令,节点负责:
-//   1) 确保 sing-box 外部二进制已安装(Compose 镜像默认已内置 v1.13.12);
+//   1) 确保 sing-box 外部二进制已安装，缺失时下载项目兼容版;
 //   2) 写入面板生成的完整 sing-box 配置 JSON;
 //   3) 由 Agent 直接管理 sing-box 子进程。
 // sing-box 只在 127.0.0.1 监听,公网口由 gost 转发占用并限速。
@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -50,14 +52,20 @@ var (
 	singboxRestartFailures int
 )
 
-// sing-box 的安装进度。保留这组状态是为了兼容旧版裸机节点；Compose 镜像已预装
-// sing-box,新节点通常只会在镜像未更新或显式开启运行时下载时进入安装状态。
+var (
+	singboxVersionCacheMu sync.Mutex
+	singboxVersionCache   string
+)
+
+// sing-box 的安装进度。节点首次创建协议且尚未安装 sing-box 时会进入该状态。
 var (
 	singboxStateMu    sync.Mutex
 	singboxInstalling bool
 	// 上一次安装失败的原因。装成功或重新开始安装时清空 ——
 	// 留着旧错误会让已经修好的机器一直显示红字。
 	singboxInstallErr string
+	singboxUpdating   bool
+	singboxUpdateErr  string
 )
 
 func setSingboxInstalling(v bool) {
@@ -82,10 +90,29 @@ func SingboxProgress() (installing bool, lastErr string) {
 	return singboxInstalling, singboxInstallErr
 }
 
+func SingboxUpdateProgress() (updating bool, lastErr string) {
+	singboxStateMu.Lock()
+	defer singboxStateMu.Unlock()
+	return singboxUpdating, singboxUpdateErr
+}
+
+func setSingboxUpdateState(updating bool, lastErr string) {
+	singboxStateMu.Lock()
+	singboxUpdating = updating
+	singboxUpdateErr = lastErr
+	singboxStateMu.Unlock()
+}
+
 // SetSingboxConfig 命令下发的数据:面板给完整 sing-box 配置 + 可选国内下载镜像
 type singboxConfigRequest struct {
 	Config json.RawMessage `json:"config"`           // 完整 sing-box 配置(log/inbounds/outbounds…)
 	Mirror string          `json:"mirror,omitempty"` // 国内 GitHub 镜像前缀(如 https://ghfast.top/),可空
+}
+
+type singboxUpdateRequest struct {
+	Version   string            `json:"version"`
+	Checksums map[string]string `json:"checksums"`
+	Mirror    string            `json:"mirror,omitempty"`
 }
 
 func singboxBinPath() string {
@@ -112,14 +139,56 @@ func singboxConfigPath() string { return filepath.Join(installDir, "sing-box.jso
 func singboxEnabledPath() string { return filepath.Join(installDir, "sing-box.enabled") }
 func singboxDisabledPath() string { return filepath.Join(installDir, "sing-box.disabled") }
 
-// hasSingboxConfig 判断卷内是否已经有协议配置。新节点只有面板下发协议后才会启动 sing-box。
+func installedSingboxVersion() string {
+	bin := singboxExecPath()
+	if fi, err := os.Stat(bin); err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
+		return ""
+	}
+
+	singboxVersionCacheMu.Lock()
+	defer singboxVersionCacheMu.Unlock()
+	if singboxVersionCache != "" {
+		return singboxVersionCache
+	}
+
+	singboxVersionCache = readSingboxVersion(bin)
+	return singboxVersionCache
+}
+
+func clearSingboxVersionCache() {
+	singboxVersionCacheMu.Lock()
+	singboxVersionCache = ""
+	singboxVersionCacheMu.Unlock()
+}
+
+func readSingboxVersion(bin string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "version").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return parseSingboxVersion(string(out))
+}
+
+func parseSingboxVersion(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) >= 3 && fields[0] == "sing-box" && fields[1] == "version" {
+			return strings.TrimPrefix(fields[2], "v")
+		}
+	}
+	return ""
+}
+
+// hasSingboxConfig 判断配置目录内是否已经有协议配置。新节点只有面板下发协议后才会启动 sing-box。
 func hasSingboxConfig() bool {
 	fi, err := os.Stat(singboxConfigPath())
 	return err == nil && fi.Mode().IsRegular() && fi.Size() > 0
 }
 
-// persistSingboxEnabled 保存 sing-box 的运行意图。标记文件放在 /etc/gost 卷内,
-// 这样容器重建后 Agent 仍能判断是应该恢复协议还是保持停用。
+// persistSingboxEnabled 保存 sing-box 的运行意图。标记文件放在 /etc/gost,
+// 这样节点重启后 Agent 仍能判断是应该恢复协议还是保持停用。
 func persistSingboxEnabled(enabled bool) error {
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return fmt.Errorf("创建 sing-box 状态目录失败: %v", err)
@@ -144,8 +213,8 @@ func persistSingboxEnabled(enabled bool) error {
 	return nil
 }
 
-// shouldRestoreSingbox 对旧版裸机节点兼容:有配置且没有 disabled 标记就恢复。
-// 新建的 Compose 节点没有 sing-box.json,因此不会误启动空协议服务。
+// shouldRestoreSingbox 对旧版节点兼容:有配置且没有 disabled 标记就恢复。
+// 新节点没有 sing-box.json,因此不会误启动空协议服务。
 func shouldRestoreSingbox() bool {
 	if !hasSingboxConfig() {
 		return false
@@ -265,6 +334,135 @@ func (w *WebSocketReporter) handleDeleteSingbox(data interface{}) error {
 	return stopSingbox()
 }
 
+func (w *WebSocketReporter) handleUpdateSingbox(data interface{}) error {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("序列化升级参数失败: %v", err)
+	}
+	var req singboxUpdateRequest
+	if err := json.Unmarshal(jsonData, &req); err != nil {
+		return fmt.Errorf("解析升级参数失败: %v", err)
+	}
+	req.Version = strings.TrimPrefix(strings.TrimSpace(req.Version), "v")
+	if !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(req.Version) {
+		return fmt.Errorf("目标版本格式无效")
+	}
+	checksum := strings.ToLower(strings.TrimSpace(req.Checksums[runtime.GOARCH]))
+	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(checksum) {
+		return fmt.Errorf("当前架构 %s 缺少有效 SHA256", runtime.GOARCH)
+	}
+	updating, _ := SingboxUpdateProgress()
+	if updating {
+		return fmt.Errorf("sing-box 正在升级")
+	}
+	if installedSingboxVersion() == req.Version {
+		return fmt.Errorf("sing-box 已是项目兼容版 %s", req.Version)
+	}
+
+	setSingboxUpdateState(true, "")
+	go func() {
+		err := performSingboxUpdate(req, checksum)
+		if err != nil {
+			setSingboxUpdateState(false, err.Error())
+			fmt.Printf("❌ sing-box 升级失败: %v\n", err)
+			return
+		}
+		setSingboxUpdateState(false, "")
+		fmt.Printf("✅ sing-box 已升级到项目兼容版 %s\n", req.Version)
+	}()
+	return nil
+}
+
+func performSingboxUpdate(req singboxUpdateRequest, expectedChecksum string) error {
+	singboxMu.Lock()
+	defer singboxMu.Unlock()
+
+	bin := singboxExecPath()
+	archive := filepath.Join(installDir, "sing-box-upgrade.tar.gz")
+	candidate := filepath.Join(installDir, "sing-box.upgrade")
+	backup := filepath.Join(installDir, "sing-box.backup")
+	_ = os.Remove(archive)
+	_ = os.Remove(candidate)
+	defer os.Remove(archive)
+	defer os.Remove(candidate)
+
+	var lastErr error
+	for _, url := range singboxDownloadURLsForVersion(req.Mirror, req.Version) {
+		if err := downloadFile(url, archive); err != nil {
+			lastErr = fmt.Errorf("%s: %v", url, err)
+			continue
+		}
+		checksum, err := fileSHA256(archive)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if !strings.EqualFold(checksum, expectedChecksum) {
+			lastErr = fmt.Errorf("%s SHA256 不匹配", url)
+			continue
+		}
+		if err := extractSingboxBinary(archive, candidate); err != nil {
+			lastErr = fmt.Errorf("%s 解压失败: %v", url, err)
+			continue
+		}
+		if actual := readSingboxVersion(candidate); actual != req.Version {
+			lastErr = fmt.Errorf("候选二进制版本为 %s，期望 %s", actual, req.Version)
+			continue
+		}
+		if hasSingboxConfig() {
+			if err := checkSingboxConfigPathWithBinary(candidate, singboxConfigPath()); err != nil {
+				return fmt.Errorf("新版本不兼容当前配置: %v", err)
+			}
+		}
+		lastErr = nil
+		break
+	}
+	if lastErr != nil {
+		return fmt.Errorf("下载项目兼容版失败: %v", lastErr)
+	}
+	if _, err := os.Stat(candidate); err != nil {
+		return fmt.Errorf("升级候选文件不存在")
+	}
+
+	wasRunning := isSingboxRunning()
+	shouldRun := wasRunning || shouldRestoreSingbox()
+	_ = os.Remove(backup)
+	if err := os.Rename(bin, backup); err != nil {
+		return fmt.Errorf("备份旧二进制失败: %v", err)
+	}
+	if err := os.Rename(candidate, bin); err != nil {
+		_ = os.Rename(backup, bin)
+		return fmt.Errorf("替换二进制失败: %v", err)
+	}
+	clearSingboxVersionCache()
+
+	if wasRunning {
+		if err := stopSingbox(); err != nil {
+			rollbackSingboxBinary(bin, backup, shouldRun)
+			return fmt.Errorf("停止旧进程失败并已回滚: %v", err)
+		}
+	}
+	if shouldRun {
+		if err := startSingbox(); err != nil {
+			rollbackSingboxBinary(bin, backup, true)
+			return fmt.Errorf("启动新版本失败并已回滚: %v", err)
+		}
+	}
+	_ = os.Remove(backup)
+	setSingboxInstallErr("")
+	return nil
+}
+
+func rollbackSingboxBinary(bin, backup string, shouldRun bool) {
+	_ = stopSingbox()
+	_ = os.Remove(bin)
+	_ = os.Rename(backup, bin)
+	clearSingboxVersionCache()
+	if shouldRun {
+		_ = startSingbox()
+	}
+}
+
 // handleGenerateRealityKeypair 用 sing-box 生成 Reality 密钥对(比在后端手搓 x25519 可靠)
 // 返回 {"privateKey": "...", "publicKey": "..."},面板存起来:私钥入服务端配置、公钥进客户端链接。
 func (w *WebSocketReporter) handleGenerateRealityKeypair(data interface{}) (map[string]string, error) {
@@ -324,19 +522,13 @@ func parseRealityKeypair(out string) (priv, pub string) {
 
 // ---- 安装 / 配置 / 服务管理 ----
 
-// ensureSingboxInstalled 兼容旧版节点:二进制不存在时下载指定版本并解压
+// ensureSingboxInstalled 在二进制不存在时下载指定版本并解压。
 func ensureSingboxInstalled(mirror string) error {
 	bin := singboxExecPath()
 	if fi, err := os.Stat(bin); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
 		setSingboxInstallErr("")
 		return nil
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("SINGBOX_RUNTIME_DOWNLOAD")), "false") {
-		msg := fmt.Sprintf("sing-box 未安装: %s；SINGBOX_RUNTIME_DOWNLOAD=false,不会运行时下载", bin)
-		setSingboxInstallErr(msg)
-		return fmt.Errorf("%s", msg)
-	}
-
 	// 走到这说明二进制不在,真要下载了 —— 从这一刻起面板显示「安装中」
 	setSingboxInstalling(true)
 	defer setSingboxInstalling(false)
@@ -375,7 +567,7 @@ func ensureSingboxInstalled(mirror string) error {
 	}
 	msg := fmt.Sprintf("所有下载源都失败,最后一个 %v", lastErr)
 	// 记下来报给面板:否则那台机只会显示「没装上」,而为什么装不上
-	// 旧版裸机只能上机器查系统日志；Compose 部署请直接查看容器日志。
+	// 记录错误并上报面板，便于直接定位下载失败原因。
 	setSingboxInstallErr(msg)
 	return fmt.Errorf("%s", msg)
 }
@@ -393,8 +585,12 @@ var singboxMirrors = []string{
 // 光靠调用方传 mirror 不够 —— 后台预装那条路径压根没传,国内机必然
 // context deadline exceeded,所以兜底放在这里,谁调用都能自愈。
 func singboxDownloadURLs(mirror string) []string {
-	asset := fmt.Sprintf("sing-box-%s-linux-%s.tar.gz", singboxVersion, runtime.GOARCH)
-	origin := fmt.Sprintf("https://github.com/SagerNet/sing-box/releases/download/v%s/%s", singboxVersion, asset)
+	return singboxDownloadURLsForVersion(mirror, singboxVersion)
+}
+
+func singboxDownloadURLsForVersion(mirror, version string) []string {
+	asset := fmt.Sprintf("sing-box-%s-linux-%s.tar.gz", version, runtime.GOARCH)
+	origin := fmt.Sprintf("https://github.com/SagerNet/sing-box/releases/download/v%s/%s", version, asset)
 
 	urls := make([]string, 0, len(singboxMirrors)+2)
 	if mirror != "" {
@@ -409,13 +605,26 @@ func singboxDownloadURLs(mirror string) []string {
 	return urls
 }
 
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
 func writeSingboxConfig(cfg json.RawMessage) error {
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return fmt.Errorf("创建 sing-box 配置目录失败: %v", err)
 	}
 
 	// 先校验临时文件,只有新配置可用时才替换旧配置,避免一次错误下发让节点
-	// 既无法 reload,又在容器重启后持续加载坏配置。
+	// 既无法 reload,又在节点重启后持续加载坏配置。
 	tmpPath := singboxConfigPath() + ".tmp"
 	if err := os.WriteFile(tmpPath, cfg, 0o600); err != nil {
 		return fmt.Errorf("写 sing-box 临时配置失败: %v", err)
@@ -438,9 +647,13 @@ func checkSingboxConfig() error {
 }
 
 func checkSingboxConfigPath(path string) error {
+	return checkSingboxConfigPathWithBinary(singboxExecPath(), path)
+}
+
+func checkSingboxConfigPathWithBinary(bin, path string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, singboxExecPath(), "check", "-c", path).CombinedOutput()
+	out, err := exec.CommandContext(ctx, bin, "check", "-c", path).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("sing-box 配置校验失败: %v, %s", err, strings.TrimSpace(string(out)))
 	}
@@ -569,9 +782,9 @@ func startSingbox() error {
 	}
 }
 
-// StopSingbox 在 Agent 退出时调用,确保容器不会遗留子进程。
+// StopSingbox 在 Agent 退出时调用,确保不会遗留子进程。
 func StopSingbox() error {
-	// 先置退出闸门,再等待配置锁。这样即使启动恢复正在做旧版裸机的
+	// 先置退出闸门,再等待配置锁。这样即使启动恢复正在做旧版节点的
 	// 下载/校验,它释放锁后也不会重新拉起 sing-box。
 	singboxProcessMu.Lock()
 	singboxShutdown = true
@@ -617,8 +830,8 @@ func stopSingbox() error {
 	}
 }
 
-// prepareSingboxOnStart 兼容旧版裸机节点的运行时安装,并在容器重启后恢复
-// 之前已经启用的协议配置。没有配置或存在 disabled 标记时保持停止。
+// prepareSingboxOnStart 在节点启动后准备运行时,并恢复之前已启用的协议配置。
+// 没有配置或存在 disabled 标记时保持停止。
 func prepareSingboxOnStart() {
 	singboxMu.Lock()
 	defer singboxMu.Unlock()
