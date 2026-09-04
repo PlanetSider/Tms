@@ -503,7 +503,8 @@ public class SingboxUtil {
                 if (u.getStatus() != null && u.getStatus() == 0) continue;
                 JSONObject uj = new JSONObject();
                 uj.put("uuid", u.getUuid());
-                uj.put("alter_id", 0);
+                // sing-box 1.13 的 VMess 入站默认 alterId=0；省略即可。
+                // alter_id 只属于出站 schema，写进入站会导致整份配置校验失败。
                 userArr.add(uj);
             }
         }
