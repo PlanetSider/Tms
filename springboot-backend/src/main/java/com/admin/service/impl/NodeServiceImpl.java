@@ -7,9 +7,11 @@ import com.admin.common.dto.NodeDto;
 import com.admin.common.dto.NodeUpdateDto;
 import com.admin.common.lang.R;
 import com.admin.common.utils.WebSocketServer;
+import com.admin.entity.Inbound;
 import com.admin.entity.Node;
 import com.admin.entity.Tunnel;
 import com.admin.entity.ViteConfig;
+import com.admin.mapper.InboundMapper;
 import com.admin.mapper.NodeMapper;
 import com.admin.mapper.TunnelMapper;
 import com.admin.service.NodeService;
@@ -26,8 +28,10 @@ import org.springframework.stereotype.Service;
 import javax.annotation.Resource;
 import java.net.Inet6Address;
 import java.net.InetAddress;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Value;
 
@@ -75,6 +79,9 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
     private TunnelMapper tunnelMapper;
 
     @Resource
+    private InboundMapper inboundMapper;
+
+    @Resource
     @Lazy
     private TunnelService tunnelService;
 
@@ -109,12 +116,20 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
     public R getAllNodes() {
         List<Node> nodeList = this.list();
         hideNodeSecrets(nodeList);
+        Set<Long> nodesWithActiveInbounds = new HashSet<>();
+        for (Inbound inbound : inboundMapper.selectList(
+                new QueryWrapper<Inbound>().select("node_id").eq("status", 1))) {
+            if (inbound.getNodeId() != null) {
+                nodesWithActiveInbounds.add(inbound.getNodeId());
+            }
+        }
         // 带上节点上报的 sing-box 运行状态,让前端能区分「节点在线」和「协议可用」
         for (Node n : nodeList) {
             n.setSingboxRunning(com.admin.common.utils.WebSocketServer.getSingboxRunning(n.getId()));
             n.setSingboxInstalled(com.admin.common.utils.WebSocketServer.getSingboxInstalled(n.getId()));
             n.setSingboxInstalling(com.admin.common.utils.WebSocketServer.getSingboxInstalling(n.getId()));
             n.setSingboxInstallErr(com.admin.common.utils.WebSocketServer.getSingboxInstallErr(n.getId()));
+            n.setSingboxExpected(nodesWithActiveInbounds.contains(n.getId()));
         }
         return R.ok(nodeList);
     }

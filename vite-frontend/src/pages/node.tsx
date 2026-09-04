@@ -37,6 +37,8 @@ interface Node {
   singboxInstalling?: boolean;
   /** 上次安装失败的原因,有值就直接摆出来,省得上机器翻容器日志 */
   singboxInstallErr?: string;
+  /** 存在启用中的协议时才应运行；未配置协议时为 false */
+  singboxExpected?: boolean;
   portSta: number;
   portEnd: number;
   version?: string;
@@ -730,7 +732,7 @@ export default function NodePage() {
                 <CardBody className="pt-0 pb-3">
                   {/* 「在线」只代表 Agent 活着。sing-box 是另一个进程,它挂了这里照样绿,
                       但那台机上的协议全都用不了 —— 必须单独标出来 */}
-                  {node.connectionStatus === 'online' && node.singboxRunning === false && (
+                  {node.connectionStatus === 'online' && node.singboxExpected === true && node.singboxRunning === false && (
                     node.singboxInstalling ? (
                       <div className="mb-3 rounded-lg border border-default-300 bg-default-100 px-2.5 py-2">
                         <div className="text-xs font-medium text-default-600">⏳ sing-box 安装中</div>
@@ -746,13 +748,11 @@ export default function NodePage() {
                         <div className="text-[11px] text-default-500 mt-0.5 leading-relaxed">
                           {node.singboxInstallErr ? (
                             <>这台机上的协议全部不可用。节点报的原因:<code className="font-mono break-all">{node.singboxInstallErr}</code>
-                            。请在节点机执行 Compose 更新命令并查看容器日志。</>
+                            。裸机节点查看 <code className="font-mono">journalctl -u gost -n 200 --no-pager</code>；Docker 节点查看容器日志。</>
                           ) : node.singboxInstalled === false ? (
-                            <>这台机上的协议全部不可用。<span className="text-danger">sing-box 没装上</span>，通常是节点镜像没有更新成功。
-                            请在节点机执行 <code className="font-mono">cd /opt/tms-node && docker compose pull && docker compose up -d --force-recreate</code>。</>
+                            <>这台机上的协议全部不可用。<span className="text-danger">sing-box 尚未安装</span>。裸机节点重启 <code className="font-mono">gost.service</code>；Docker 节点更新并重建 node 容器。</>
                           ) : (
-                            <>这台机上的协议全部不可用。到节点机执行 <code className="font-mono">cd /opt/tms-node && docker compose up -d</code> 恢复;
-                            仍未恢复时查看 <code className="font-mono">docker compose logs -f node</code>。</>
+                            <>这台机上的协议全部不可用。裸机节点执行 <code className="font-mono">systemctl restart gost</code>；Docker 节点执行 <code className="font-mono">docker compose up -d</code>。</>
                           )}
                         </div>
                       </div>

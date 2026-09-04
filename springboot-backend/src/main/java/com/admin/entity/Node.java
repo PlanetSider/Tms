@@ -45,8 +45,7 @@ public class Node extends BaseEntity {
 
     /**
      * 这台机装没装 sing-box。null = 节点版本较老、没上报过这个字段。
-     * 区分它是因为「没装」和「装了没跑」的修法不同:前者需要重新拉取节点镜像,
-     * 后者需要重新创建节点 Compose 容器。
+     * 裸机节点由 Agent 准备二进制，Compose 节点则由镜像预装；修复提示必须兼容两种部署。
      */
     @com.baomidou.mybatisplus.annotation.TableField(exist = false)
     private Boolean singboxInstalled;
@@ -58,6 +57,13 @@ public class Node extends BaseEntity {
     /** 上次安装失败的原因(节点上报)。有值时直接显示给车主,省得上机器翻容器日志 */
     @com.baomidou.mybatisplus.annotation.TableField(exist = false)
     private String singboxInstallErr;
+
+    /**
+     * 当前是否存在启用中的协议入站。没有协议时 sing-box 保持停止是正常状态，
+     * 前端只有在该值为 true 且进程未运行时才应告警。
+     */
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private Boolean singboxExpected;
 
     private String version;
 
