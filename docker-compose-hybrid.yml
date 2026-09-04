@@ -7,16 +7,20 @@
 #   3) docker compose -f docker-compose-hybrid.yml --env-file .env up -d --build
 #      (第一次会本地编译前后端,几分钟)
 #   4) 浏览器开 http://测试机IP:${FRONTEND_PORT},默认 admin_user/admin_user
+#
+# 部署前必须在同目录 .env 中填写 DB_NAME、DB_USER、DB_PASSWORD 和 JWT_SECRET；
+# 端口冲突时修改 FRONTEND_PORT 或 BACKEND_PORT。下方注释中的 gost/636x 为示例值。
 services:
   mysql:
     image: mysql:5.7
     container_name: gost-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
-      MYSQL_DATABASE: ${DB_NAME:?DB_NAME is required}
-      MYSQL_USER: ${DB_USER:?DB_USER is required}
-      MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      # 必须与 backend 的 DB_* 和 .env 中的数据库配置一致。
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required} # 必须修改：与 .env 的 DB_PASSWORD 一致。
+      MYSQL_DATABASE: ${DB_NAME:?DB_NAME is required} # 必须修改：与 backend 的 DB_NAME 一致。
+      MYSQL_USER: ${DB_USER:?DB_USER is required} # 必须修改：与 backend 的 DB_USER 一致。
+      MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required} # 必须修改：与 MYSQL_ROOT_PASSWORD 一致。
       TZ: Asia/Shanghai
     volumes:
       - ./data/mysql:/var/lib/mysql
@@ -48,13 +52,15 @@ services:
     restart: unless-stopped
     environment:
       DB_HOST: mysql
-      DB_NAME: ${DB_NAME:?DB_NAME is required}
-      DB_USER: ${DB_USER:?DB_USER is required}
-      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      # 以下 DB_*、JWT_SECRET 必须与 .env 中的配置一致。
+      DB_NAME: ${DB_NAME:?DB_NAME is required} # 必须修改：填写 .env 中的数据库名（示例 gost）。
+      DB_USER: ${DB_USER:?DB_USER is required} # 必须修改：填写 .env 中的数据库用户（示例 gost）。
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required} # 必须修改：填写 .env 中的数据库密码。
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required} # 必须修改：填写随机长字符串。
       LOG_DIR: /app/logs
       JAVA_OPTS: "-Xms256m -Xmx512m -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
     ports:
+      # 可修改左侧宿主机端口；右侧 6365 是容器端口，不要修改。
       - "${BACKEND_PORT:-6365}:6365"
     volumes:
       - ./logs/backend:/app/logs
@@ -78,6 +84,7 @@ services:
     container_name: vite-frontend
     restart: unless-stopped
     ports:
+      # 可修改左侧宿主机端口；右侧 80 是容器端口，不要修改。
       - "${FRONTEND_PORT:-6366}:80"
     depends_on:
       backend:
@@ -91,9 +98,9 @@ networks:
     driver: bridge
 
 # --- .env 示例(存成同目录 .env)---
-# DB_NAME=gost
-# DB_USER=gost
-# DB_PASSWORD=换个强密码
-# JWT_SECRET=换一串随机长字符串
-# BACKEND_PORT=6365
-# FRONTEND_PORT=6366
+# DB_NAME=gost                 # 必须填写；可按需修改数据库名称
+# DB_USER=gost                 # 必须填写；可按需修改数据库用户
+# DB_PASSWORD=换个强密码       # 必须填写随机强密码
+# JWT_SECRET=换一串随机长字符串 # 必须填写随机长字符串
+# BACKEND_PORT=6365            # 可修改宿主机端口
+# FRONTEND_PORT=6366           # 可修改宿主机端口

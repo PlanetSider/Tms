@@ -1,7 +1,11 @@
 x-tms-config:
+  # 可选修改：数据库名称；必须与后端 DB_NAME 保持一致（默认 gost）。
   db-name: &tms-db-name "gost" # TMS_DB_NAME
+  # 可选修改：数据库用户名；必须与后端 DB_USER 保持一致（默认 gost）。
   db-user: &tms-db-user "gost" # TMS_DB_USER
+  # 必须修改：填写随机强密码；MySQL 和后端会共用这个值。
   db-password: &tms-db-password "" # TMS_DB_PASSWORD
+  # 必须修改：填写随机长字符串，用于后端 JWT 签名。
   jwt-secret: &tms-jwt-secret "" # TMS_JWT_SECRET
 
 services:
@@ -47,6 +51,7 @@ services:
       LOG_DIR: /app/logs
       JAVA_OPTS: "-Xms256m -Xmx512m -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
     ports:
+      # 可修改左侧宿主机端口；右侧 6365 是容器端口，不要修改。
       - "6365:6365" # TMS_BACKEND_PORT
     volumes:
       - ./logs/backend:/app/logs
@@ -67,6 +72,7 @@ services:
     container_name: vite-frontend
     restart: unless-stopped
     ports:
+      # 可修改左侧宿主机端口；右侧 80 是容器端口，不要修改。
       - "6366:80" # TMS_FRONTEND_PORT
     depends_on:
       backend:
@@ -80,4 +86,5 @@ networks:
     enable_ipv6: true
     ipam:
       config:
+        # 可选修改：仅在该 ULA 网段与其他 Docker/VPN 网络冲突时覆盖。
         - subnet: ${TMS_IPV6_SUBNET:-fd00:dead:beef::/48}
