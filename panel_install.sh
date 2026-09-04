@@ -290,7 +290,11 @@ install_tms_command() {
 # TMS 面板管理命令(类似 x-ui)。直接输 tms 打开管理菜单。
 TMS_DIR="$panel_dir"
 [ -d "\$TMS_DIR" ] && cd "\$TMS_DIR"
-exec bash /usr/local/bin/tms-panel.sh "\${1:-menu}"
+# 参数必须完整透传，否则 `tms domain panel.example.com` 会丢失域名参数。
+if [ \$# -eq 0 ]; then
+  exec bash /usr/local/bin/tms-panel.sh menu
+fi
+exec bash /usr/local/bin/tms-panel.sh "\$@"
 EOF
   chmod +x /usr/local/bin/tms 2>/dev/null || true
   echo "✅ 管理命令已就绪:以后输入  tms  即可打开管理菜单(更新/卸载/彻底清理/查看状态)"
@@ -329,6 +333,39 @@ validate_ipv6_choice() {
 # 对外展示时保留占位串,安装流程写数据库时则使用上面的空失败结果。
 get_server_ip() {
   get_public_ip || echo '你的服务器IP'
+}
+
+# 按本机公网地址类型查询域名记录。优先使用 getent，再回退到常见 DNS 工具；
+# 避免 getent hosts 在双栈域名上先返回另一地址族，造成解析不匹配的误报。
+resolve_domain_record() {
+  local domain="$1" server_ip="$2"
+  local address_family="A" getent_database="ahostsv4" record_pattern='^[0-9.]+$' ip=""
+
+  if [[ "$server_ip" == *:* ]]; then
+    address_family="AAAA"
+    getent_database="ahostsv6"
+    record_pattern='^[0-9A-Fa-f:]+$'
+  fi
+
+  ip="$(getent "$getent_database" "$domain" 2>/dev/null | awk '{print $1}' | head -n1)"
+  if [ -z "$ip" ] && command -v dig >/dev/null 2>&1; then
+    ip="$(dig +short +time=3 +tries=2 "$address_family" "$domain" 2>/dev/null \
+      | grep -E "$record_pattern" \
+      | head -n1)"
+  fi
+  if [ -z "$ip" ] && command -v host >/dev/null 2>&1; then
+    if [ "$address_family" = "A" ]; then
+      ip="$(host -t A "$domain" 2>/dev/null | awk '/has address/{print $4; exit}')"
+    else
+      ip="$(host -t AAAA "$domain" 2>/dev/null | awk '/has IPv6 address/{print $5; exit}')"
+    fi
+  fi
+  if [ -z "$ip" ] && command -v nslookup >/dev/null 2>&1; then
+    ip="$(nslookup -type="$address_family" "$domain" 2>/dev/null \
+      | awk '/^Name:/{found=1} found && /^Address: /{print $2; exit}')"
+  fi
+
+  printf '%s' "$ip"
 }
 
 # URL 中的 IPv6 主机需要方括号,否则浏览器会把冒号误解为端口分隔符。
@@ -739,6 +776,9 @@ update_panel() {
     fi
     rm -f /tmp/tms-panel.new 2>/dev/null
   fi
+
+  # 每次更新都刷新轻量启动器，使旧版只透传第一个参数的问题能够自动修复。
+  install_tms_command >/dev/null 2>&1 || true
 
   echo "🔄 开始更新面板..."
   check_docker
@@ -1755,10 +1795,15 @@ setup_domain() {
   echo "[1/5] 检查域名解析..."
   local server_ip resolved
   server_ip="$(get_server_ip)"
-  resolved="$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | head -n1)"
+  resolved="$(resolve_domain_record "$domain" "$server_ip")"
   if [ -z "$resolved" ]; then
     echo "   ⚠️  解析不到 $domain,证书大概率申请不下来。"
-    echo "      先去域名后台加一条 A 记录指向 $server_ip,等生效再来。"
+    if [[ "$server_ip" == *:* ]]; then
+      echo "      先去域名后台加一条 AAAA 记录指向 $server_ip,等生效再来。"
+    else
+      echo "      先去域名后台加一条 A 记录指向 $server_ip,等生效再来。"
+    fi
+    echo "      刚修改 DNS 时等待几分钟属于正常情况；确认已生效后可选择继续。"
     read -p "      仍然继续? (y/N): " go
     [[ "$go" == "y" || "$go" == "Y" ]] || { echo "已取消"; return 1; }
   elif [ "$resolved" != "$server_ip" ]; then
