@@ -8,6 +8,8 @@ export type SingboxVersionStatus =
   | "unknown";
 
 export interface SingboxVersionFields {
+  /** 节点内核名称；未提供时使用当前项目默认的 sing-box。 */
+  coreName?: string;
   singboxVersion?: string;
   singboxVersionErr?: string;
   singboxApprovedVersion?: string;
@@ -71,6 +73,7 @@ export const protocolVersionVisual = (
 
 export function SingboxVersionBadge({ node }: { node: SingboxVersionFields }) {
   const badge = versionBadge(node);
+  const coreName = node.coreName && /xray/i.test(node.coreName) ? "Xray-core" : "sing-box";
   const approvedVersion = node.singboxApprovedVersion || "未知";
   const upstreamVersion = node.singboxUpstreamVersion
     || (node.singboxVersionCheckFailed ? "检查失败" : "未知");
@@ -80,26 +83,31 @@ export function SingboxVersionBadge({ node }: { node: SingboxVersionFields }) {
 
   return (
     <div
-      className="flex min-w-0 items-start justify-end gap-2"
+      className="min-w-0 space-y-1.5"
       title={node.singboxVersionErr || node.singboxUpdateSummary || undefined}
     >
-      <div className="min-w-0 space-y-0.5 text-right text-[11px] leading-4">
-        <div className="whitespace-nowrap">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium text-default-600">{coreName}</span>
+        <Chip color={badge.color} size="sm" variant="flat" className="shrink-0 text-[10px]">
+          {badge.label}
+        </Chip>
+      </div>
+      <div className="space-y-0.5 text-xs leading-4">
+        <div className="flex items-center justify-between gap-4">
           <span className="text-default-500">项目兼容版：</span>
-          <span className="font-mono">{approvedVersion}</span>
+          <span className="font-mono text-right">{approvedVersion}</span>
         </div>
-        <div className="whitespace-nowrap">
+        <div className="flex items-center justify-between gap-4">
           <span className="text-default-500">上游最新版：</span>
-          <span className="font-mono">{upstreamVersion}</span>
+          <span className="font-mono text-right">{upstreamVersion}</span>
         </div>
-        <div className="whitespace-nowrap">
+        <div className="flex items-center justify-between gap-4">
           <span className="text-default-500">节点当前版：</span>
-          <span className={node.singboxVersionErr ? "text-danger" : "font-mono"}>{currentVersion}</span>
+          <span className={node.singboxVersionErr ? "text-danger text-right" : "font-mono text-right"}>
+            {currentVersion}
+          </span>
         </div>
       </div>
-      <Chip color={badge.color} size="sm" variant="flat" className="shrink-0 text-[10px]">
-        {badge.label}
-      </Chip>
     </div>
   );
 }

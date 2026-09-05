@@ -245,8 +245,7 @@ export default function InboundPage() {
                   <Chip size="sm" variant="flat" color="primary" className="ml-auto">{nodeInbounds.length} 协议</Chip>
                 </div>
                 {firstIp && <div className="text-xs text-default-500 font-mono">{firstIp}</div>}
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="text-default-500">sing-box</span>
+                <div className="text-xs">
                   <SingboxVersionBadge node={n} />
                 </div>
 

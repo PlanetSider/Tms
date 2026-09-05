@@ -875,11 +875,10 @@ export default function NodePage() {
                       <span className="text-xs">{node.portSta}-{node.portEnd}</span>
                     </div>
                     <div className="flex justify-between text-sm">
-                      <span className="text-default-600">版本</span>
+                      <span className="text-default-600">Agent版本</span>
                       <span className="text-xs">{node.version || '未知'}</span>
                     </div>
-                    <div className="flex justify-between items-center gap-2 text-sm">
-                      <span className="text-default-600 flex-shrink-0">sing-box</span>
+                    <div className="text-sm">
                       <SingboxVersionBadge node={node} />
                     </div>
                     <div className="flex justify-between text-sm">
