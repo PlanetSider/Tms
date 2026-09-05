@@ -9,6 +9,7 @@ export type SingboxVersionStatus =
 
 export interface SingboxVersionFields {
   singboxVersion?: string;
+  singboxVersionErr?: string;
   singboxApprovedVersion?: string;
   singboxUpstreamVersion?: string;
   singboxVersionStatus?: SingboxVersionStatus;
@@ -21,6 +22,9 @@ export interface SingboxVersionFields {
 type ChipColor = "default" | "primary" | "secondary" | "success" | "warning" | "danger";
 
 const versionBadge = (node: SingboxVersionFields): { color: ChipColor; label: string } => {
+  if (node.singboxVersionErr) {
+    return { color: "danger", label: "读取失败" };
+  }
   if (node.singboxVersionStatus === "upstream_pending") {
     return {
       color: "warning",
@@ -67,13 +71,33 @@ export const protocolVersionVisual = (
 
 export function SingboxVersionBadge({ node }: { node: SingboxVersionFields }) {
   const badge = versionBadge(node);
+  const approvedVersion = node.singboxApprovedVersion || "未知";
+  const upstreamVersion = node.singboxUpstreamVersion
+    || (node.singboxVersionCheckFailed ? "检查失败" : "未知");
+  const currentVersion = node.singboxVersionErr
+    ? "读取失败"
+    : node.singboxVersion || "未知";
+
   return (
     <div
-      className="flex min-w-0 items-center justify-end gap-1.5"
-      title={node.singboxUpdateSummary || undefined}
+      className="flex min-w-0 items-start justify-end gap-2"
+      title={node.singboxVersionErr || node.singboxUpdateSummary || undefined}
     >
-      <span className="font-mono text-xs">{node.singboxVersion || "未知"}</span>
-      <Chip color={badge.color} size="sm" variant="flat" className="text-[10px]">
+      <div className="min-w-0 space-y-0.5 text-right text-[11px] leading-4">
+        <div className="whitespace-nowrap">
+          <span className="text-default-500">项目兼容版：</span>
+          <span className="font-mono">{approvedVersion}</span>
+        </div>
+        <div className="whitespace-nowrap">
+          <span className="text-default-500">上游最新版：</span>
+          <span className="font-mono">{upstreamVersion}</span>
+        </div>
+        <div className="whitespace-nowrap">
+          <span className="text-default-500">节点当前版：</span>
+          <span className={node.singboxVersionErr ? "text-danger" : "font-mono"}>{currentVersion}</span>
+        </div>
+      </div>
+      <Chip color={badge.color} size="sm" variant="flat" className="shrink-0 text-[10px]">
         {badge.label}
       </Chip>
     </div>

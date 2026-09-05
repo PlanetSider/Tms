@@ -254,6 +254,8 @@ journalctl -u gost -n 200 --no-pager
 
 面板显示节点在线只代表 Agent 在线；如果 sing-box 未运行，该节点上的协议仍不可用，应优先查看 `gost.service` 日志中的下载、配置校验或启动错误。
 
+如果 sing-box 一栏显示“版本未知”，说明节点尚未上报实际版本。面板不会通过 Agent 版本号猜测 sing-box 状态；请在节点机执行 `/etc/gost/sing-box version` 和上述日志命令，确认二进制可以正常运行。节点 Agent 重新连接后，页面会显示该命令返回的真实版本。
+
 ### 7. 卸载
 
 面板机执行（Compose 部署）：

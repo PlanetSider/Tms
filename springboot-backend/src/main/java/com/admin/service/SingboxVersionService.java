@@ -26,7 +26,6 @@ public class SingboxVersionService {
 
     /** 项目兼容版；必须与 go-gost/x/socket/singbox.go 中的 singboxVersion 保持一致。 */
     public static final String APPROVED_VERSION = "1.13.12";
-
     private static final String RELEASE_API = "https://api.github.com/repos/SagerNet/sing-box/releases/latest";
     private static final long CHECK_INTERVAL_MS = 6L * 60 * 60 * 1000;
     private static final List<String> SUPPORTED_PROTOCOLS = Arrays.asList(
@@ -114,6 +113,11 @@ public class SingboxVersionService {
         node.setSingboxUpstreamVersion(latest);
         node.setSingboxVersionCheckFailed(checkFailed);
         node.setSingboxVersionCheckedAt(checkedAt > 0 ? checkedAt : null);
+
+        if (node.getSingboxVersionErr() != null && !node.getSingboxVersionErr().trim().isEmpty()) {
+            applyState(node, "unknown", new ArrayList<>(), node.getSingboxVersionErr().trim());
+            return;
+        }
 
         if (actual == null) {
             applyState(node, "unknown", new ArrayList<>(), "节点尚未上报 sing-box 版本");

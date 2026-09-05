@@ -48,9 +48,10 @@ type SystemInfo struct {
 	// 只报 running 的话,面板无法区分尚未安装和进程异常退出。
 	SingboxInstalled bool   `json:"singbox_installed"`
 	// SingboxVersion 是节点实际安装的版本；面板统一决定项目兼容版和更新状态。
-	SingboxVersion   string `json:"singbox_version,omitempty"`
-	SingboxUpdating  bool   `json:"singbox_updating"`
-	SingboxUpdateErr string `json:"singbox_update_err,omitempty"`
+	SingboxVersion    string `json:"singbox_version,omitempty"`
+	SingboxVersionErr string `json:"singbox_version_err,omitempty"`
+	SingboxUpdating   bool   `json:"singbox_updating"`
+	SingboxUpdateErr  string `json:"singbox_update_err,omitempty"`
 }
 
 // NetworkStats 网络统计信息
@@ -360,6 +361,11 @@ func (w *WebSocketReporter) collectSystemInfo() SystemInfo {
 	networkStats := getNetworkStats()
 	cpuInfo := getCPUInfo()
 	memoryInfo := getMemoryInfo()
+	singboxInstalled := isSingboxInstalled()
+	var singboxVersion, singboxVersionErr string
+	if singboxInstalled {
+		singboxVersion, singboxVersionErr = installedSingboxVersionInfo()
+	}
 
 	return SystemInfo{
 		Uptime:           getUptime(),
@@ -368,8 +374,9 @@ func (w *WebSocketReporter) collectSystemInfo() SystemInfo {
 		CPUUsage:         cpuInfo.Usage,
 		MemoryUsage:      memoryInfo.Usage,
 		SingboxRunning:    isSingboxRunning(),
-		SingboxInstalled:  isSingboxInstalled(),
-		SingboxVersion:    installedSingboxVersion(),
+		SingboxInstalled:  singboxInstalled,
+		SingboxVersion:    singboxVersion,
+		SingboxVersionErr: singboxVersionErr,
 		SingboxUpdating:   singboxUpdatingNow(),
 		SingboxUpdateErr:  singboxLastUpdateErr(),
 		SingboxInstalling: singboxInstallingNow(),

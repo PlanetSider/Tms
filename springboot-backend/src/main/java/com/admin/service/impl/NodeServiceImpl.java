@@ -136,6 +136,7 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
             n.setSingboxExpected(nodesWithActiveInbounds.contains(n.getId()));
             n.setSingboxUpdating(com.admin.common.utils.WebSocketServer.getSingboxUpdating(n.getId()));
             n.setSingboxUpdateErr(com.admin.common.utils.WebSocketServer.getSingboxUpdateErr(n.getId()));
+            n.setSingboxVersionErr(com.admin.common.utils.WebSocketServer.getSingboxVersionErr(n.getId()));
             String reportedSingboxVersion = com.admin.common.utils.WebSocketServer.getSingboxVersion(n.getId());
             singboxVersionService.decorateNode(n,
                     reportedSingboxVersion != null ? reportedSingboxVersion : n.getSingboxVersion());

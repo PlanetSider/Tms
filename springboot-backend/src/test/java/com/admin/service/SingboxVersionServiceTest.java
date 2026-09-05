@@ -44,6 +44,17 @@ class SingboxVersionServiceTest {
     }
 
     @Test
+    void versionReadErrorOverridesStoredVersion() {
+        Node node = new Node();
+        node.setSingboxVersionErr("读取 sing-box 版本失败");
+
+        service.decorateNode(node, "1.13.12", "1.14.0", false, 123L);
+
+        assertEquals("unknown", node.getSingboxVersionStatus());
+        assertEquals("读取 sing-box 版本失败", node.getSingboxUpdateSummary());
+    }
+
+    @Test
     void comparesNumericVersions() {
         assertTrue(SingboxVersionService.compareVersions("1.14.0", "1.13.12") > 0);
         assertTrue(SingboxVersionService.compareVersions("1.13.2", "1.13.12") < 0);

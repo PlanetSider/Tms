@@ -68,6 +68,10 @@ public class Node extends BaseEntity {
 
     private String singboxVersion;
 
+    /** 读取 sing-box 版本失败的原因，只来自节点实时上报，不入库。 */
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private String singboxVersionErr;
+
     @com.baomidou.mybatisplus.annotation.TableField(exist = false)
     private String singboxApprovedVersion;
 

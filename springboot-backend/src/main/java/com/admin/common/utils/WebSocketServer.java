@@ -66,6 +66,7 @@ public class WebSocketServer extends TextWebSocketHandler {
     private static final ConcurrentHashMap<Long, String> singboxInstallErr = new ConcurrentHashMap<>();
     /** 节点实际安装的 sing-box 版本。项目兼容版和上游版由面板统一判断。 */
     private static final ConcurrentHashMap<Long, String> singboxVersions = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Long, String> singboxVersionErr = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<Long, Boolean> singboxUpdating = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<Long, String> singboxUpdateErr = new ConcurrentHashMap<>();
 
@@ -90,6 +91,10 @@ public class WebSocketServer extends TextWebSocketHandler {
         return nodeId == null ? null : singboxVersions.get(nodeId);
     }
 
+    public static String getSingboxVersionErr(Long nodeId) {
+        return nodeId == null ? null : singboxVersionErr.get(nodeId);
+    }
+
     public static Boolean getSingboxUpdating(Long nodeId) {
         return nodeId == null ? null : singboxUpdating.get(nodeId);
     }
@@ -108,6 +113,7 @@ public class WebSocketServer extends TextWebSocketHandler {
         singboxInstalling.remove(nodeId);
         singboxInstallErr.remove(nodeId);
         singboxVersions.remove(nodeId);
+        singboxVersionErr.remove(nodeId);
         singboxUpdating.remove(nodeId);
         singboxUpdateErr.remove(nodeId);
     }
@@ -289,6 +295,14 @@ public class WebSocketServer extends TextWebSocketHandler {
                                         versionUpdate.setSingboxVersion(actualVersion);
                                         nodeService.updateById(versionUpdate);
                                     }
+                                }
+                            }
+                            if (info != null) {
+                                String versionErr = info.getString("singbox_version_err");
+                                if (versionErr != null && !versionErr.isEmpty()) {
+                                    singboxVersionErr.put(nodeId, versionErr);
+                                } else {
+                                    singboxVersionErr.remove(nodeId);
                                 }
                             }
                             if (info != null && info.containsKey("singbox_updating")) {

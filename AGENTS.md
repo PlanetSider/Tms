@@ -35,6 +35,7 @@
 - 面板 Compose 的 `BACKEND_PORT` 是节点连接面板的公网端口，IPv6 地址写入节点配置时必须使用 `[地址]:端口` 形式。
 - 所有节点均由面板生成的 `install.sh -a ... -s ...` 一键命令安装为 `gost.service`；安装和更新不得破坏已有的 `config.json`、`gost.json`/`gost.yaml`、sing-box 配置、证书或 systemd 兼容路径。
 - `go-gost/x/socket/singbox.go` 的 sing-box 下载版本必须与后端 `SingboxVersionService.APPROVED_VERSION` 保持一致。上游 Latest Release 只用于提示，未经配置兼容验证不得自动成为项目兼容版或触发节点升级；协议影响清单只能依据官方 Release Notes 维护。
+- 新增节点上报字段或 WebSocket 命令时，必须保证节点实际读取并上报对应数据；面板不得通过修改或猜测 Agent 版本号来代替真实状态。
 - 节点在线升级 sing-box 时必须使用项目兼容版对应架构的官方 SHA256，候选二进制需先校验版本和现有配置，再原子替换；启动失败必须恢复旧二进制。
 - 面板“转发机监控”的“安装命令”按钮必须生成 `install.sh -a ... -s ...` systemd 一键命令，下载地址使用 `PlanetSider/Tms` Release；`install.sh` 升级旧节点时会停止旧的 `sing-box.service` 并交给 Agent 接管，修改 Agent 启停逻辑时必须同时验证这一迁移路径。
 - 协议自动转发使用 `inbound-tunnel-node{nodeId}` 专用隧道，不要重新复用用户手工创建的端口转发隧道。

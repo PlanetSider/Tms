@@ -67,6 +67,7 @@ interface Node extends SingboxVersionFields {
 const protocolUpgradeDisabledReason = (node: Node): string => {
   if (node.connectionStatus !== "online") return "节点离线";
   if (node.singboxUpdating) return "协议核心正在升级";
+  if (node.singboxVersionErr) return `读取 sing-box 版本失败：${node.singboxVersionErr}`;
   if (node.singboxVersionStatus === "upstream_pending") return "上游版本尚未通过项目兼容验证";
   if (node.singboxVersionStatus === "current") return "当前已是项目兼容版";
   if (node.singboxVersionStatus === "incompatible") return "节点版本高于项目兼容版，不能自动降级";
@@ -306,6 +307,11 @@ export default function NodePage() {
               singboxVersion: typeof systemInfo.singbox_version === 'string' && systemInfo.singbox_version
                 ? systemInfo.singbox_version
                 : node.singboxVersion,
+              singboxVersionErr: typeof systemInfo.singbox_version_err === 'string' && systemInfo.singbox_version_err
+                ? systemInfo.singbox_version_err
+                : systemInfo.singbox_version
+                  ? undefined
+                  : node.singboxVersionErr,
               singboxUpdating: typeof systemInfo.singbox_updating === 'boolean'
                 ? systemInfo.singbox_updating
                 : node.singboxUpdating,
@@ -329,6 +335,7 @@ export default function NodePage() {
       }));
       const metadataKey = [
         systemInfo.singbox_version || "",
+        systemInfo.singbox_version_err || "",
         systemInfo.singbox_updating === true ? "1" : "0",
         systemInfo.singbox_update_err || "",
       ].join(":");

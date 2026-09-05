@@ -140,19 +140,32 @@ func singboxEnabledPath() string { return filepath.Join(installDir, "sing-box.en
 func singboxDisabledPath() string { return filepath.Join(installDir, "sing-box.disabled") }
 
 func installedSingboxVersion() string {
+	version, _ := installedSingboxVersionInfo()
+	return version
+}
+
+func installedSingboxVersionInfo() (string, string) {
 	bin := singboxExecPath()
-	if fi, err := os.Stat(bin); err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
-		return ""
+	fi, err := os.Stat(bin)
+	if err != nil {
+		return "", fmt.Sprintf("无法访问 sing-box 二进制 %s: %v", bin, err)
+	}
+	if !fi.Mode().IsRegular() || fi.Size() == 0 {
+		return "", fmt.Sprintf("sing-box 二进制无效: %s", bin)
 	}
 
 	singboxVersionCacheMu.Lock()
 	defer singboxVersionCacheMu.Unlock()
 	if singboxVersionCache != "" {
-		return singboxVersionCache
+		return singboxVersionCache, ""
 	}
 
-	singboxVersionCache = readSingboxVersion(bin)
-	return singboxVersionCache
+	version, err := readSingboxVersionWithError(bin)
+	if err != nil {
+		return "", err.Error()
+	}
+	singboxVersionCache = version
+	return singboxVersionCache, ""
 }
 
 func clearSingboxVersionCache() {
@@ -162,13 +175,36 @@ func clearSingboxVersionCache() {
 }
 
 func readSingboxVersion(bin string) string {
+	version, _ := readSingboxVersionWithError(bin)
+	return version
+}
+
+func readSingboxVersionWithError(bin string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, bin, "version").CombinedOutput()
 	if err != nil {
-		return ""
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("读取 sing-box 版本超时")
+		}
+		detail := strings.TrimSpace(string(out))
+		if len(detail) > 200 {
+			detail = detail[:200]
+		}
+		if detail != "" {
+			return "", fmt.Errorf("读取 sing-box 版本失败: %v: %s", err, detail)
+		}
+		return "", fmt.Errorf("读取 sing-box 版本失败: %v", err)
 	}
-	return parseSingboxVersion(string(out))
+	version := parseSingboxVersion(string(out))
+	if version == "" {
+		detail := strings.TrimSpace(string(out))
+		if len(detail) > 200 {
+			detail = detail[:200]
+		}
+		return "", fmt.Errorf("无法解析 sing-box 版本输出: %s", detail)
+	}
+	return version, nil
 }
 
 func parseSingboxVersion(output string) string {
