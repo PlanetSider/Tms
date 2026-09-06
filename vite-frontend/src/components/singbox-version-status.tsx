@@ -1,5 +1,3 @@
-import { Chip } from "@heroui/chip";
-
 export type SingboxVersionStatus =
   | "current"
   | "upstream_pending"
@@ -23,33 +21,6 @@ export interface SingboxVersionFields {
 
 type ChipColor = "default" | "primary" | "secondary" | "success" | "warning" | "danger";
 
-const versionBadge = (node: SingboxVersionFields): { color: ChipColor; label: string } => {
-  if (node.singboxVersionErr) {
-    return { color: "danger", label: "读取失败" };
-  }
-  if (node.singboxVersionStatus === "upstream_pending") {
-    return {
-      color: "warning",
-      label: node.singboxUpstreamVersion ? `上游 ${node.singboxUpstreamVersion} 待适配` : "上游待适配",
-    };
-  }
-  if (node.singboxVersionStatus === "update_required") {
-    return {
-      color: "danger",
-      label: node.singboxApprovedVersion ? `需升级至 ${node.singboxApprovedVersion}` : "需升级",
-    };
-  }
-  if (node.singboxVersionStatus === "incompatible") {
-    return { color: "danger", label: "版本未兼容" };
-  }
-  if (node.singboxVersionStatus === "current") {
-    return node.singboxVersionCheckFailed
-      ? { color: "default", label: "上游检查失败" }
-      : { color: "secondary", label: "项目兼容版" };
-  }
-  return { color: "default", label: "版本未知" };
-};
-
 export const protocolVersionVisual = (
   node: SingboxVersionFields,
   protocol?: string,
@@ -70,44 +41,3 @@ export const protocolVersionVisual = (
   }
   return { color: "secondary" };
 };
-
-export function SingboxVersionBadge({ node }: { node: SingboxVersionFields }) {
-  const badge = versionBadge(node);
-  const coreName = node.coreName && /xray/i.test(node.coreName) ? "Xray-core" : "sing-box";
-  const approvedVersion = node.singboxApprovedVersion || "未知";
-  const upstreamVersion = node.singboxUpstreamVersion
-    || (node.singboxVersionCheckFailed ? "检查失败" : "未知");
-  const currentVersion = node.singboxVersionErr
-    ? "读取失败"
-    : node.singboxVersion || "未知";
-
-  return (
-    <div
-      className="min-w-0 space-y-1.5"
-      title={node.singboxVersionErr || node.singboxUpdateSummary || undefined}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-medium text-default-600">{coreName}</span>
-        <Chip color={badge.color} size="sm" variant="flat" className="shrink-0 text-[10px]">
-          {badge.label}
-        </Chip>
-      </div>
-      <div className="space-y-0.5 text-xs leading-4">
-        <div className="flex items-center justify-between gap-4">
-          <span className="text-default-500">项目兼容版：</span>
-          <span className="font-mono text-right">{approvedVersion}</span>
-        </div>
-        <div className="flex items-center justify-between gap-4">
-          <span className="text-default-500">上游最新版：</span>
-          <span className="font-mono text-right">{upstreamVersion}</span>
-        </div>
-        <div className="flex items-center justify-between gap-4">
-          <span className="text-default-500">节点当前版：</span>
-          <span className={node.singboxVersionErr ? "text-danger text-right" : "font-mono text-right"}>
-            {currentVersion}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}

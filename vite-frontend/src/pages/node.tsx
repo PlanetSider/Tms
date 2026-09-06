@@ -11,7 +11,7 @@ import { Alert } from "@heroui/alert";
 import { Progress } from "@heroui/progress";
 import toast from 'react-hot-toast';
 import { copyTextToClipboard } from "@/utils/clipboard";
-import { SingboxVersionBadge, type SingboxVersionFields } from "@/components/singbox-version-status";
+import { type SingboxVersionFields } from "@/components/singbox-version-status";
 import axios from 'axios';
 
 
@@ -877,9 +877,6 @@ export default function NodePage() {
                     <div className="flex justify-between text-sm">
                       <span className="text-default-600">Agent版本</span>
                       <span className="text-xs">{node.version || '未知'}</span>
-                    </div>
-                    <div className="text-sm">
-                      <SingboxVersionBadge node={node} />
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-default-600">开机时间</span>

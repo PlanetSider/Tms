@@ -23,7 +23,7 @@ import {
 import { copyTextToClipboard } from "@/utils/clipboard";
 import { SNI_PRESETS, DEFAULT_SNI, cleanSni } from "@/config/sni";
 import { SubQr } from "@/components/sub-qr";
-import { SingboxVersionBadge, protocolVersionVisual } from "@/components/singbox-version-status";
+import { protocolVersionVisual } from "@/components/singbox-version-status";
 
 /**
  * 协议管理(合体面板)· 机器卡模式。
@@ -245,10 +245,6 @@ export default function InboundPage() {
                   <Chip size="sm" variant="flat" color="primary" className="ml-auto">{nodeInbounds.length} 协议</Chip>
                 </div>
                 {firstIp && <div className="text-xs text-default-500 font-mono">{firstIp}</div>}
-                <div className="text-xs">
-                  <SingboxVersionBadge node={n} />
-                </div>
-
                 {/* 节点在线 ≠ 协议可用:Agent 和 sing-box 是两个进程,sing-box 挂了
                     这里照样显示「在线」,但这台机上所有协议全都连不上。必须单独标出来 —— 
                     不然只会以为是协议参数配错了,往那个方向查很久都查不出来 */}

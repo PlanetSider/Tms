@@ -8,7 +8,7 @@ import { Divider } from "@heroui/divider";
 import { Switch } from "@heroui/switch";
 import { Select, SelectItem } from "@heroui/select";
 import toast from 'react-hot-toast';
-import { updateConfigs } from '@/api';
+import { getNodeList, updateConfigs } from '@/api';
 import { SettingsIcon } from '@/components/icons';
 
 import { isAdmin } from '@/utils/auth';
@@ -41,6 +41,21 @@ interface ConfigItem {
   dependsOn?: string; // 依赖的配置项key
   dependsValue?: string; // 依赖的配置项值
 }
+
+interface NodeVersionInfo {
+  upstreamVersions: string[];
+  agentVersions: string[];
+  approvedVersions: string[];
+  currentVersions: string[];
+}
+
+const uniqueNodeVersions = (nodes: any[], key: string): string[] => Array.from(new Set(
+  nodes
+    .map(node => typeof node?.[key] === 'string' ? node[key].trim() : '')
+    .filter(Boolean),
+));
+
+const formatNodeVersions = (versions: string[]): string => versions.length > 0 ? versions.join('、') : '未知';
 
 // 网站配置项定义
 const CONFIG_ITEMS: ConfigItem[] = [
@@ -129,6 +144,12 @@ export default function ConfigPage() {
   const [saving, setSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
   const [originalConfigs, setOriginalConfigs] = useState<Record<string, string>>(initialConfigs);
+  const [nodeVersionInfo, setNodeVersionInfo] = useState<NodeVersionInfo>({
+    upstreamVersions: [],
+    agentVersions: [],
+    approvedVersions: [],
+    currentVersions: [],
+  });
 
   // 权限检查
   useEffect(() => {
@@ -178,6 +199,29 @@ export default function ConfigPage() {
 
     return () => clearTimeout(timer);
   }, []); // 只在组件挂载时执行一次
+
+  useEffect(() => {
+    const loadNodeVersions = async () => {
+      try {
+        const response = await getNodeList();
+        if (response.code === 0 && Array.isArray(response.data)) {
+          setNodeVersionInfo({
+            upstreamVersions: uniqueNodeVersions(response.data, 'singboxUpstreamVersion'),
+            agentVersions: uniqueNodeVersions(response.data, 'version'),
+            approvedVersions: uniqueNodeVersions(response.data, 'singboxApprovedVersion'),
+            currentVersions: uniqueNodeVersions(
+              response.data.filter((node: any) => !node?.singboxVersionErr),
+              'singboxVersion',
+            ),
+          });
+        }
+      } catch {
+        // 版本信息为只读辅助信息，读取失败不影响网站配置编辑。
+      }
+    };
+
+    void loadNodeVersions();
+  }, []);
 
   // 处理配置项变更
   const handleConfigChange = (key: string, value: string) => {
@@ -407,6 +451,38 @@ export default function ConfigPage() {
                 </div>
               );
             })}
+          </CardBody>
+        </Card>
+
+        <Card className="mt-4 shadow-md">
+          <CardHeader className="pb-4">
+            <div>
+              <h2 className="text-xl font-semibold">sing-box</h2>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                查看面板与节点当前使用的协议核心版本
+              </p>
+            </div>
+          </CardHeader>
+
+          <Divider />
+
+          <CardBody className="space-y-3 pt-6">
+            <div className="flex items-center justify-between gap-4 text-sm">
+              <span className="text-gray-600 dark:text-gray-400">上游最新版：</span>
+              <span className="font-mono text-right">{formatNodeVersions(nodeVersionInfo.upstreamVersions)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4 text-sm">
+              <span className="text-gray-600 dark:text-gray-400">面板agent版本：</span>
+              <span className="font-mono text-right">{formatNodeVersions(nodeVersionInfo.agentVersions)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4 text-sm">
+              <span className="text-gray-600 dark:text-gray-400">项目兼容版：</span>
+              <span className="font-mono text-right">{formatNodeVersions(nodeVersionInfo.approvedVersions)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-4 text-sm">
+              <span className="text-gray-600 dark:text-gray-400">节点当前版：</span>
+              <span className="font-mono text-right">{formatNodeVersions(nodeVersionInfo.currentVersions)}</span>
+            </div>
           </CardBody>
         </Card>
 
